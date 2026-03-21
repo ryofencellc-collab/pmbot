@@ -1,17 +1,12 @@
 """
 ingest.py — Weather-only focused ingest.
-
-Step 1: Pull all weather markets from Polymarket (filtered)
-Step 2: Pull price histories for weather markets only
-Step 3: Pull Open-Meteo historical temps for all cities
-
-Completes in 10-15 minutes without timeout.
+Designed to resume automatically on every Railway restart.
+Never duplicates data.
 """
 
 import requests
 import time
 import json
-import os
 from datetime import datetime, timedelta, timezone, date
 from data.database import get_conn, init_db
 
@@ -67,14 +62,6 @@ def is_weather_market(question, category):
     if "weather" in cat:
         return True
     return any(kw in q for kw in WEATHER_KEYWORDS)
-
-
-def extract_city(question):
-    q = (question or "").lower()
-    for city in WEATHER_CITIES.keys():
-        if city.lower() in q:
-            return city
-    return None
 
 
 def fetch_weather_markets(days_back=1095):
@@ -149,7 +136,7 @@ def fetch_weather_markets(days_back=1095):
 
         conn.commit()
         saved += batch
-        print(f"  offset={offset} | weather saved={batch} | total={saved}")
+        print(f"  offset={offset} | saved={batch} | total={saved}")
 
         if len(data) < limit or stop:
             break
@@ -158,20 +145,16 @@ def fetch_weather_markets(days_back=1095):
         time.sleep(0.3)
 
     conn.close()
-
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM markets WHERE market_type='weather'")
-    total = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM markets WHERE market_type='weather' AND outcome IS NOT NULL")
-    resolved = c.fetchone()[0]
-    conn.close()
-
-    print(f"\n[STEP 1] Done: {total} weather markets | {resolved} resolved\n")
-    return total
+    print(f"\n[STEP 1] Done: {saved} weather markets\n")
+    return saved
 
 
 def fetch_weather_price_histories():
+    """
+    Pulls price history for weather markets.
+    Skips markets already fetched.
+    Safe to run multiple times — never duplicates.
+    """
     conn = get_conn()
     c    = conn.cursor()
     c.execute('''
@@ -184,10 +167,11 @@ def fetch_weather_price_histories():
     market_ids = [r[0] for r in c.fetchall()]
     conn.close()
 
-    print(f"[STEP 2] Price histories for {len(market_ids)} weather markets...")
+    print(f"[STEP 2] Price histories for {len(market_ids)} markets...")
 
     saved = 0
     for i, mid in enumerate(market_ids):
+        # Skip if already fetched
         conn = get_conn()
         c    = conn.cursor()
         c.execute("SELECT COUNT(*) FROM price_snapshots WHERE market_id=?", (mid,))
@@ -196,7 +180,7 @@ def fetch_weather_price_histories():
         if exists:
             continue
 
-        mdata = safe_get(f"{GAMMA_BASE}/markets/{mid}", delay=0.2)
+        mdata = safe_get(f"{GAMMA_BASE}/markets/{mid}", delay=0.3)
         if not mdata:
             continue
 
@@ -211,7 +195,7 @@ def fetch_weather_price_histories():
 
         hist = safe_get(f"{CLOB_BASE}/prices-history", params={
             "market": tokens[0], "interval": "1h", "fidelity": 60
-        }, delay=0.2)
+        }, delay=0.3)
 
         if not hist or "history" not in hist:
             continue
@@ -234,10 +218,10 @@ def fetch_weather_price_histories():
             conn.close()
             saved += len(rows)
 
-        if i % 25 == 0:
-            print(f"  [{i}/{len(market_ids)}] done | {saved} snapshots")
+        if i % 100 == 0:
+            print(f"  [{i}/{len(market_ids)}] done | {saved} snapshots saved")
 
-        time.sleep(0.2)
+        time.sleep(0.5)
 
     print(f"\n[STEP 2] Done: {saved} price snapshots\n")
     return saved
@@ -314,16 +298,6 @@ def run_full_ingest(days_back=1095):
     for table in ["markets", "price_snapshots", "weather_data"]:
         c.execute(f"SELECT COUNT(*) FROM {table}")
         print(f"  {table:<20} {c.fetchone()[0]:>10,} rows")
-
-    c.execute("SELECT COUNT(*) FROM markets WHERE market_type='weather' AND outcome='Yes'")
-    yes = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM markets WHERE market_type='weather' AND outcome='No'")
-    no  = c.fetchone()[0]
-    total = yes + no
-    if total > 0:
-        print(f"\n  YES resolutions: {yes:,} ({yes/total*100:.1f}%)")
-        print(f"  NO resolutions:  {no:,} ({no/total*100:.1f}%)")
-    print(f"{'='*55}\n")
     conn.close()
 
 
