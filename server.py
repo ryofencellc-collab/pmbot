@@ -6,6 +6,7 @@ Run: uvicorn server:app --host 0.0.0.0 --port 8000
 import sys
 import os
 import json
+import threading
 sys.path.insert(0, os.path.dirname(__file__))
 
 from fastapi import FastAPI, BackgroundTasks
@@ -22,6 +23,16 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 @app.on_event("startup")
 def startup():
     init_db()
+    def _run():
+        try:
+            from data.ingest import fetch_weather_price_histories
+            print("[STARTUP] Beginning price history load...")
+            fetch_weather_price_histories()
+            print("[STARTUP] Price history load complete")
+        except Exception as e:
+            print(f"[STARTUP ERR] {e}")
+    threading.Thread(target=_run, daemon=True).start()
+    print("[STARTUP] Background thread started")
 
 
 @app.get("/health")
