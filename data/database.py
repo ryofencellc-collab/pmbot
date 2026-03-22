@@ -1,17 +1,15 @@
 import sqlite3
 import os
 
-DB_PATH = "/data/polymarket.db"
+DB_PATH = "/app/polymarket.db"
 
 def get_conn():
-    os.makedirs("/data", exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 def init_db():
-    os.makedirs("/data", exist_ok=True)
     conn = get_conn()
     c = conn.cursor()
     c.execute("CREATE TABLE IF NOT EXISTS markets (id TEXT PRIMARY KEY, question TEXT, category TEXT, market_type TEXT, created_at INTEGER, resolved_at INTEGER, end_date_iso TEXT, outcome TEXT, volume REAL DEFAULT 0, liquidity REAL DEFAULT 0)")
