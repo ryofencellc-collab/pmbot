@@ -143,6 +143,28 @@ def ingest_status_check():
     return ingest_status
 
 
+@app.get("/debug/slug")
+def debug_slug():
+    import requests as req
+    from datetime import date
+    today = date.today()
+    slug  = f"highest-temperature-in-chicago-on-{today.strftime("%B").lower()}-{today.day}-{today.year}"
+    url   = "https://gamma-api.polymarket.com/events"
+    try:
+        r    = req.get(url, params={"slug": slug}, timeout=20,
+                       headers={"User-Agent": "PolyEdge/1.0"})
+        data = r.json()
+        return {
+            "slug":         slug,
+            "status_code":  r.status_code,
+            "result_count": len(data) if isinstance(data, list) else "not a list",
+            "market_count": len(data[0].get("markets", [])) if isinstance(data, list) and data else 0,
+            "market_titles": [m.get("groupItemTitle") for m in data[0].get("markets", [])] if isinstance(data, list) and data else [],
+        }
+    except Exception as e:
+        return {"slug": slug, "error": str(e)}
+
+
 
 
 @app.get("/debug/polymarket")
