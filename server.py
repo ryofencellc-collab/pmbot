@@ -148,7 +148,8 @@ def debug_slug():
     import requests as req
     from datetime import date
     today = date.today()
-    slug  = f"highest-temperature-in-chicago-on-{today.strftime("%B").lower()}-{today.day}-{today.year}"
+    month = today.strftime("%B").lower()
+    slug  = f"highest-temperature-in-chicago-on-{month}-{today.day}-{today.year}"
     url   = "https://gamma-api.polymarket.com/events"
     try:
         r    = req.get(url, params={"slug": slug}, timeout=20,
