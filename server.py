@@ -55,7 +55,7 @@ def startup():
     print("[SERVER] Ready — scheduler running")
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "POST", "HEAD"])
 def health():
     conn = get_conn()
     c = conn.cursor()
