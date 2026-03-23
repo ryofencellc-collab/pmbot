@@ -22,7 +22,7 @@ from data.database import get_conn, init_db
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 WU_API_KEY = "e1f10a1e78da46f5b10a1e78da96f525"
 
-# ONE CITY ONLY until pipeline is confirmed end-to-end
+# Chicago only — confirmed working
 CITY_SLUGS = {
     "Chicago": "chicago",
 }
