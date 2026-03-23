@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>PolyEdge</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+body { background: #0a0a0f; color: #e8e8f0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; min-height: 100vh; }
+.header { background: #0f0f1a; border-bottom: 1px solid #1a1a2e; padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
+.logo { font-size: 20px; font-weight: 800; letter-spacing: -0.5px; }
+.logo span { color: #00ff88; }
+.status-bar { display: flex; gap: 8px; flex-wrap: wrap; padding: 10px 16px; background: #0c0c15; border-bottom: 1px solid #1a1a2e; }
+.chip { display: flex; align-items: center; gap: 5px; font-size: 11px; padding: 4px 10px; background: #1a1a2e; border-radius: 20px; }
+.dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.green { background: #00ff88; box-shadow: 0 0 5px #00ff88; }
+.red { background: #ff4444; box-shadow: 0 0 5px #ff4444; }
+.gray { background: #555; }
+.tabs { display: flex; background: #0c0c15; border-bottom: 2px solid #1a1a2e; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.tabs::-webkit-scrollbar { display: none; }
+.tab { flex-shrink: 0; padding: 13px 18px; font-size: 13px; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent; color: #555; margin-bottom: -2px; transition: all 0.15s; user-select: none; }
+.tab.on { color: #00ff88; border-bottom-color: #00ff88; }
+.page { display: none; padding: 16px; max-width: 600px; margin: 0 auto; }
+.page.on { display: block; }
+.card { background: #0f0f1a; border: 1px solid #1a1a2e; border-radius: 12px; padding: 16px; margin-bottom: 14px; }
+.card-label { font-size: 10px; color: #444; letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 12px; font-weight: 600; }
+.btn { display: block; width: 100%; padding: 14px; border: none; border-radius: 10px; font-size: 14px; font-weight: 700; cursor: pointer; margin-bottom: 10px; transition: opacity 0.15s; }
+.btn:active { opacity: 0.75; }
+.btn-primary { background: #00ff88; color: #000; }
+.btn-outline { background: transparent; color: #00ff88; border: 1.5px solid #00ff88; }
+.signal-card { background: #0d160d; border: 1px solid #1a301a; border-radius: 10px; padding: 14px; margin-bottom: 12px; }
+.signal-city { font-size: 15px; font-weight: 700; color: #00ff88; margin-bottom: 6px; }
+.signal-q { font-size: 12px; color: #999; margin-bottom: 10px; line-height: 1.4; }
+.tags { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.tag { background: #1a2e1a; color: #00ff88; font-size: 11px; padding: 3px 8px; border-radius: 5px; font-weight: 600; }
+.reason { font-size: 11px; color: #555; line-height: 1.5; }
+.trade-row { padding: 12px 0; border-bottom: 1px solid #111; }
+.trade-row:last-child { border-bottom: none; }
+.trade-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 4px; }
+.trade-name { font-size: 13px; font-weight: 600; }
+.trade-pnl { font-size: 13px; font-weight: 700; font-family: monospace; }
+.trade-sub { font-size: 11px; color: #555; line-height: 1.5; }
+.win-text { color: #00ff88; }
+.loss-text { color: #ff4444; }
+.pend-text { color: #ffaa00; }
+.stats-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 4px; }
+.stat-box { text-align: center; }
+.stat-num { font-size: 22px; font-weight: 800; font-family: monospace; color: #00ff88; }
+.stat-lbl { font-size: 10px; color: #444; margin-top: 2px; text-transform: uppercase; }
+.big-num { font-size: 36px; font-weight: 800; font-family: monospace; color: #00ff88; text-align: center; padding: 16px 0 4px; }
+.big-sub { font-size: 11px; color: #444; text-align: center; margin-bottom: 16px; }
+.test-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; border-radius: 8px; margin-bottom: 8px; font-size: 12px; }
+.test-ok { background: #0d160d; border: 1px solid #1a301a; }
+.test-err { background: #160d0d; border: 1px solid #301a1a; }
+.test-msg { color: #555; font-size: 11px; max-width: 60%; text-align: right; }
+.log-block { margin-bottom: 12px; }
+.log-meta { font-size: 10px; color: #444; margin-bottom: 4px; }
+.log-body { background: #060608; border: 1px solid #1a1a2e; border-radius: 6px; padding: 10px; font-family: monospace; font-size: 10px; color: #666; white-space: pre-wrap; max-height: 200px; overflow-y: auto; }
+.empty { text-align: center; color: #333; padding: 40px 20px; font-size: 13px; line-height: 1.6; }
+.alert { background: #160d0d; border: 1px solid #ff4444; border-radius: 8px; padding: 12px; font-size: 12px; color: #ff8888; margin-bottom: 12px; }
+.spinner { text-align: center; padding: 30px; color: #333; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">POLY<span>EDGE</span></div>
+  <div id="clock" style="font-size:12px;color:#444"></div>
+</div>
+
+<div class="status-bar" id="statusBar">
+  <div class="chip"><div class="dot gray"></div>Connecting...</div>
+</div>
+
+<div class="tabs">
+  <div class="tab on" onclick="go('signals',this)">Signals</div>
+  <div class="tab" onclick="go('trades',this)">Trades</div>
+  <div class="tab" onclick="go('performance',this)">Performance</div>
+  <div class="tab" onclick="go('system',this)">System</div>
+</div>
+
+<div id="signals" class="page on">
+  <div class="card">
+    <div class="card-label">Today's Signals</div>
+    <div id="sigContent"><div class="spinner">Scanning markets...</div></div>
+  </div>
+  <button class="btn btn-primary" id="btnMorning" onclick="doMorning()">▶ Run Morning Session</button>
+  <button class="btn btn-outline" onclick="loadSig()">↻ Refresh</button>
+</div>
+
+<div id="trades" class="page">
+  <div class="card">
+    <div class="card-label">Trade Log</div>
+    <div id="tradeContent"><div class="spinner">Loading...</div></div>
+  </div>
+  <button class="btn btn-outline" id="btnEvening" onclick="doEvening()">▶ Check Today's Outcomes</button>
+</div>
+
+<div id="performance" class="page">
+  <div class="card">
+    <div class="card-label">Paper Trading Results</div>
+    <div id="perfContent"><div class="spinner">Loading...</div></div>
+  </div>
+</div>
+
+<div id="system" class="page">
+  <div class="card">
+    <div class="card-label">System Test</div>
+    <button class="btn btn-primary" id="btnTest" onclick="doTest()">🔍 Run Full System Test</button>
+    <div id="testContent"></div>
+  </div>
+  <div class="card">
+    <div class="card-label">Session Logs</div>
+    <div id="logContent"><div class="empty">No logs yet</div></div>
+  </div>
+</div>
+
+<script>
+const API = '';
+
+// Clock
+setInterval(() => {
+  const n = new Date();
+  document.getElementById('clock').textContent =
+    n.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+}, 1000);
+
+// Tab switching
+function go(name, el) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('on'));
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('on'));
+  el.classList.add('on');
+  document.getElementById(name).classList.add('on');
+  if (name === 'signals')     loadSig();
+  if (name === 'trades')      loadTrades();
+  if (name === 'performance') loadPerf();
+  if (name === 'system')      loadLogs();
+}
+
+// Status
+async function loadStatus() {
+  try {
+    const r = await fetch(API+'/health');
+    const d = await r.json();
+    document.getElementById('statusBar').innerHTML = `
+      <div class="chip"><div class="dot green"></div>Online</div>
+      <div class="chip"><div class="dot green"></div>${(d.tables.markets||0).toLocaleString()} markets</div>
+      <div class="chip"><div class="dot green"></div>${d.tables.paper_trades||0} trades</div>
+      <div class="chip"><div class="dot green"></div>${d.tables.wu_temps||0} WU days</div>
+    `;
+  } catch {
+    document.getElementById('statusBar').innerHTML =
+      '<div class="chip"><div class="dot red"></div>Offline</div>';
+  }
+}
+
+// Signals
+async function loadSig() {
+  document.getElementById('sigContent').innerHTML = '<div class="spinner">Scanning markets...</div>';
+  try {
+    const r = await fetch(API+'/signals');
+    const d = await r.json();
+    const el = document.getElementById('sigContent');
+    if (!d.signals?.length) {
+      el.innerHTML = '<div class="empty">No signals today.<br><br>Markets may not be open yet<br>or no edge detected.</div>';
+      return;
+    }
+    el.innerHTML = d.signals.map(s => `
+      <div class="signal-card">
+        <div class="signal-city">🌡 ${s.city}</div>
+        <div class="signal-q">${s.question}</div>
+        <div class="tags">
+          <span class="tag">Forecast: ${s.forecast_f}°F</span>
+          <span class="tag">Entry: ${(s.entry_price*100).toFixed(1)}¢</span>
+          <span class="tag">Edge: ${(s.edge*100).toFixed(0)}%</span>
+          <span class="tag">${s.ev.toFixed(1)}x EV</span>
+        </div>
+        <div class="reason">${s.reasoning}</div>
+      </div>`).join('');
+  } catch(e) {
+    document.getElementById('sigContent').innerHTML = '<div class="alert">'+e.message+'</div>';
+  }
+}
+
+// Trades
+async function loadTrades() {
+  document.getElementById('tradeContent').innerHTML = '<div class="spinner">Loading...</div>';
+  try {
+    const r = await fetch(API+'/trades');
+    const d = await r.json();
+    const el = document.getElementById('tradeContent');
+    if (!d.length) {
+      el.innerHTML = '<div class="empty">No trades yet.<br>Run morning session to start.</div>';
+      return;
+    }
+    el.innerHTML = d.map(t => {
+      const cls = t.outcome==='Yes'?'win-text':t.outcome==='No'?'loss-text':'pend-text';
+      const icon = t.outcome==='Yes'?'✅':t.outcome==='No'?'❌':'⏳';
+      const pnl = t.pnl!=null ? (t.pnl>=0?'+$'+t.pnl.toFixed(2):'-$'+Math.abs(t.pnl).toFixed(2)) : 'Pending';
+      return `<div class="trade-row">
+        <div class="trade-top">
+          <div class="trade-name">${icon} ${t.city} — ${t.trade_date}</div>
+          <div class="trade-pnl ${cls}">${pnl}</div>
+        </div>
+        <div class="trade-sub">${t.question}</div>
+        <div class="trade-sub">Entry: ${(t.entry_price*100).toFixed(1)}¢ · Size: $${t.size?.toFixed(2)} · Forecast: ${t.noaa_forecast_f}°F · Range: ${t.predicted_range}</div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    document.getElementById('tradeContent').innerHTML = '<div class="alert">'+e.message+'</div>';
+  }
+}
+
+// Performance
+async function loadPerf() {
+  document.getElementById('perfContent').innerHTML = '<div class="spinner">Loading...</div>';
+  try {
+    const r = await fetch(API+'/performance');
+    const d = await r.json();
+    document.getElementById('perfContent').innerHTML = `
+      <div class="big-num">$${(d.final_capital||100).toFixed(2)}</div>
+      <div class="big-sub">Starting capital: $100.00</div>
+      <div class="stats-grid">
+        <div class="stat-box"><div class="stat-num">${d.win_rate||0}%</div><div class="stat-lbl">Win Rate</div></div>
+        <div class="stat-box"><div class="stat-num">${d.total_bets||0}</div><div class="stat-lbl">Bets</div></div>
+        <div class="stat-box"><div class="stat-num">${d.roi||0}%</div><div class="stat-lbl">ROI</div></div>
+      </div>`;
+  } catch(e) {
+    document.getElementById('perfContent').innerHTML = '<div class="alert">'+e.message+'</div>';
+  }
+}
+
+// System test
+async function doTest() {
+  const btn = document.getElementById('btnTest');
+  btn.textContent = 'Testing...'; btn.disabled = true;
+  document.getElementById('testContent').innerHTML = '<div class="spinner">Running tests...</div>';
+  try {
+    const r = await fetch(API+'/test');
+    const d = await r.json();
+    document.getElementById('testContent').innerHTML = Object.entries(d).map(([k,v]) => `
+      <div class="test-row ${v.status==='ok'?'test-ok':'test-err'}">
+        <span>${v.status==='ok'?'✅':'❌'} ${k}</span>
+        <span class="test-msg">${v.message}</span>
+      </div>`).join('');
+  } catch(e) {
+    document.getElementById('testContent').innerHTML = '<div class="alert">'+e.message+'</div>';
+  }
+  btn.textContent = '🔍 Run Full System Test'; btn.disabled = false;
+}
+
+// Logs
+async function loadLogs() {
+  try {
+    const r = await fetch(API+'/logs');
+    const d = await r.json();
+    const el = document.getElementById('logContent');
+    if (!d.length) { el.innerHTML = '<div class="empty">No logs yet</div>'; return; }
+    el.innerHTML = d.map(l => `
+      <div class="log-block">
+        <div class="log-meta">${l.session_type} — ${l.logged_at}</div>
+        <div class="log-body">${l.content}</div>
+      </div>`).join('');
+  } catch {}
+}
+
+// Morning session
+async function doMorning() {
+  const btn = document.getElementById('btnMorning');
+  btn.textContent = 'Running...'; btn.disabled = true;
+  try {
+    const r = await fetch(API+'/morning', {method:'POST'});
+    const d = await r.json();
+    alert('Done! ' + (d.trades?.length||0) + ' trades placed.');
+    loadSig(); loadStatus();
+  } catch(e) { alert('Error: '+e.message); }
+  btn.textContent = '▶ Run Morning Session'; btn.disabled = false;
+}
+
+// Evening session
+async function doEvening() {
+  const btn = document.getElementById('btnEvening');
+  btn.textContent = 'Checking...'; btn.disabled = true;
+  try {
+    await fetch(API+'/evening', {method:'POST'});
+    alert('Outcomes recorded.');
+    loadTrades(); loadStatus();
+  } catch(e) { alert('Error: '+e.message); }
+  btn.textContent = '▶ Check Today\'s Outcomes'; btn.disabled = false;
+}
+
+// Init
+loadStatus();
+loadSig();
+setInterval(loadStatus, 30000);
+</script>
+</body>
+</html>
