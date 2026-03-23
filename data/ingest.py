@@ -67,7 +67,7 @@ def fetch_wu_temps(days_back=120):
 
             # Check if already have this
             c = conn.cursor()
-            c.execute("SELECT COUNT(*) FROM wu_temps WHERE city=? AND date=?", (city, date_str))
+            c.execute("SELECT COUNT(*) FROM wu_temps WHERE city=%s AND date=%s", (city, date_str))
             if c.fetchone()[0] > 0:
                 current += timedelta(days=1)
                 continue
@@ -83,8 +83,8 @@ def fetch_wu_temps(days_back=120):
                 temps = [o.get("temp") for o in obs if o.get("temp")]
                 if temps:
                     max_t = max(temps)
-                    conn.execute(
-                        "INSERT OR IGNORE INTO wu_temps (city, station, date, max_temp_f) VALUES (?,?,?,?)",
+                    conn.cursor().execute(
+                        "INSERT INTO wu_temps (city, station, date, max_temp_f) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
                         (city, station, date_str, max_t)
                     )
                     conn.commit()
@@ -107,7 +107,7 @@ def parse_market(question):
     """
     Parse Polymarket temperature question into structured data.
     Returns dict with city, target_low, target_high, unit, market_type
-    
+
     Formats:
     - "between 76-77°F" → {low:76, high:77, unit:F, type:range}
     - "56°F or higher"  → {low:56, high:999, unit:F, type:above}
@@ -223,10 +223,11 @@ def fetch_polymarket_markets(days_back=120):
                 created_at = 0
 
             try:
-                c.execute("""INSERT OR IGNORE INTO markets
+                c.execute("""INSERT INTO markets
                     (id, question, city, target_low, target_high, market_type,
                      unit, resolved_at, created_at, outcome, last_trade_price, volume)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (id) DO NOTHING""",
                     (market_id, question, parsed["city"],
                      parsed["target_low"], parsed["target_high"],
                      parsed["market_type"], parsed["unit"],
@@ -271,7 +272,7 @@ def fetch_price_histories():
     for i, mid in enumerate(market_ids):
         conn = get_conn()
         c    = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM price_snapshots WHERE market_id=?", (mid,))
+        c.execute("SELECT COUNT(*) FROM price_snapshots WHERE market_id=%s", (mid,))
         if c.fetchone()[0] > 0:
             conn.close()
             continue
@@ -302,8 +303,9 @@ def fetch_price_histories():
 
         if rows:
             conn = get_conn()
-            conn.executemany(
-                "INSERT OR IGNORE INTO price_snapshots (market_id, timestamp, yes_price) VALUES (?,?,?)",
+            cur  = conn.cursor()
+            cur.executemany(
+                "INSERT INTO price_snapshots (market_id, timestamp, yes_price) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
                 rows)
             conn.commit()
             conn.close()
@@ -325,8 +327,8 @@ def run_full_ingest(days_back=120):
     print(f"  POLYEDGE INGEST — {days_back} days")
     print(f"{'='*55}\n")
 
-    fetch_wu_temps(days_back=days_back)
     fetch_polymarket_markets(days_back=days_back)
+    fetch_wu_temps(days_back=days_back)
     fetch_price_histories()
 
     conn = get_conn()
