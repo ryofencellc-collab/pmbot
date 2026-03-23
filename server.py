@@ -47,11 +47,14 @@ def run_test():
 
 @app.get("/signals")
 def get_signals():
-    from strategy.signals import scan_signals
-    from datetime import datetime, timezone
-    today        = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    signals, log = scan_signals(today)
-    return {"signals": signals, "log": log, "date": today}
+    try:
+        from strategy.signals import scan_signals
+        from datetime import datetime, timezone
+        today        = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        signals, log = scan_signals(today)
+        return {"signals": signals, "log": log, "date": today}
+    except Exception as e:
+        return {"signals": [], "log": str(e), "date": ""}
 
 
 @app.post("/morning")
