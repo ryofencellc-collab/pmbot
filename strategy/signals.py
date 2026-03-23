@@ -195,12 +195,14 @@ def scan_signals(target_date=None):
             log.append(f"  Market: {m['question'][:60]}")
             log.append(f"  Price: {price} | True prob: {true_prob} | Edge: {edge:.3f}")
 
-            if price < 0.05 or price > 0.45:
-                log.append(f"  SKIP: Price {price} outside entry range (0.05-0.45)")
+            # No arbitrary price floor — data decides
+            # Only filter: edge must be positive and EV must be positive
+            if edge <= 0:
+                log.append(f"  SKIP: No edge (edge={edge:.3f})")
                 continue
 
-            if edge < 0.15:
-                log.append(f"  SKIP: Edge {edge:.3f} below minimum 0.15")
+            if price >= 0.90:
+                log.append(f"  SKIP: Price {price} already near certainty")
                 continue
 
             log.append(f"  ✅ SIGNAL: BET YES")
