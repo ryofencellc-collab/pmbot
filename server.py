@@ -45,7 +45,7 @@ def run_scheduler():
             print("[SCHEDULER] Morning session starting...")
             try:
                 from data.ingest import run_full_ingest
-                run_full_ingest(days_back=7, days_ahead=7)
+                run_full_ingest(days_back=30, days_ahead=7)
             except Exception as e:
                 print(f"[SCHEDULER] Ingest error: {e}")
             try:
@@ -88,7 +88,7 @@ def run_ingest_background():
     ingest_status["result"]  = None
     try:
         from data.ingest import run_full_ingest
-        run_full_ingest(days_back=7, days_ahead=7)
+        run_full_ingest(days_back=30, days_ahead=7)
         conn = get_conn()
         c    = conn.cursor()
         counts = {}
