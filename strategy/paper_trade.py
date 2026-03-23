@@ -19,8 +19,9 @@ MAX_BETS_DAY  = 3
 def get_current_capital():
     conn = get_conn()
     c    = conn.cursor()
-    c.execute("SELECT SUM(pnl) FROM paper_trades WHERE outcome IS NOT NULL")
-    total_pnl = c.fetchone()[0] or 0
+    c.execute("SELECT SUM(pnl) as sum FROM paper_trades WHERE outcome IS NOT NULL")
+    row = c.fetchone()
+    total_pnl = row["sum"] if row and row["sum"] else 0
     conn.close()
     return round(CAPITAL_START + total_pnl, 2)
 
@@ -29,8 +30,8 @@ def get_bets_today():
     today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     conn  = get_conn()
     c     = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM paper_trades WHERE trade_date=%s", (today,))
-    count = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) as count FROM paper_trades WHERE trade_date=%s", (today,))
+    count = c.fetchone()["count"]
     conn.close()
     return count
 
