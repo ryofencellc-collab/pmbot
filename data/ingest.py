@@ -22,30 +22,13 @@ from data.database import get_conn, init_db
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 WU_API_KEY = "e1f10a1e78da46f5b10a1e78da96f525"
 
-# City slug names exactly as Polymarket uses them
+# ONE CITY ONLY until pipeline is confirmed end-to-end
 CITY_SLUGS = {
-    "Chicago":       "chicago",
-    "Dallas":        "dallas",
-    "Atlanta":       "atlanta",
-    "Miami":         "miami",
-    "New York City": "new-york-city",
-    "Seattle":       "seattle",
-    "Boston":        "boston",
-    "Los Angeles":   "los-angeles",
-    "San Francisco": "san-francisco",
+    "Chicago": "chicago",
 }
 
-# WU stations — match Polymarket's resolution source exactly
 WU_STATIONS = {
-    "Chicago":       "KORD",
-    "Dallas":        "KDFW",
-    "Atlanta":       "KATL",
-    "Miami":         "KMIA",
-    "New York City": "KLGA",
-    "Seattle":       "KSEA",
-    "Boston":        "KBOS",
-    "Los Angeles":   "KLAX",
-    "San Francisco": "KSFO",
+    "Chicago": "KORD",
 }
 
 
@@ -207,7 +190,6 @@ def fetch_polymarket_markets(days_ahead=7, days_back=30):
     print(f"\n[POLY] {len(CITY_SLUGS)} cities x {len(all_dates)} dates "
           f"= {total_calls} API calls...")
 
-    conn  = get_conn()
     saved = 0
 
     for city, city_slug in CITY_SLUGS.items():
@@ -216,38 +198,47 @@ def fetch_polymarket_markets(days_ahead=7, days_back=30):
         for target_date in all_dates:
             markets = fetch_event(city, city_slug, target_date)
 
-            for m in markets:
+            if not markets:
+                time.sleep(0.2)
+                continue
+
+            # Fresh connection per date batch
+            conn = get_conn()
+            try:
                 c = conn.cursor()
-                try:
-                    c.execute("""
-                        INSERT INTO markets
-                            (id, question, city, target_low, target_high,
-                             market_type, unit, resolved_at, created_at,
-                             outcome, last_trade_price, volume)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                        ON CONFLICT (id) DO UPDATE SET
-                            outcome           = EXCLUDED.outcome,
-                            last_trade_price  = EXCLUDED.last_trade_price,
-                            volume            = EXCLUDED.volume
-                    """, (
-                        m["id"], m["question"], m["city"],
-                        m["target_low"], m["target_high"],
-                        m["market_type"], m["unit"],
-                        m["resolved_at"], m["created_at"],
-                        m["outcome"], m["last_trade_price"], m["volume"]
-                    ))
-                    conn.commit()
-                    city_count += 1
-                    saved += 1
-                except Exception as e:
-                    conn.rollback()
-                    print(f"  [DB ERR] {city} {target_date}: {e}")
+                for m in markets:
+                    try:
+                        c.execute("""
+                            INSERT INTO markets
+                                (id, question, city, target_low, target_high,
+                                 market_type, unit, resolved_at, created_at,
+                                 outcome, last_trade_price, volume)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                            ON CONFLICT (id) DO UPDATE SET
+                                outcome           = EXCLUDED.outcome,
+                                last_trade_price  = EXCLUDED.last_trade_price,
+                                volume            = EXCLUDED.volume
+                        """, (
+                            m["id"], m["question"], m["city"],
+                            m["target_low"], m["target_high"],
+                            m["market_type"], m["unit"],
+                            m["resolved_at"], m["created_at"],
+                            m["outcome"], m["last_trade_price"], m["volume"]
+                        ))
+                        city_count += 1
+                        saved += 1
+                    except Exception as e:
+                        print(f"  [DB ERR] {city} {target_date}: {e}")
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                print(f"  [COMMIT ERR] {city} {target_date}: {e}")
+            finally:
+                conn.close()
 
             time.sleep(0.2)
 
         print(f"  {city}: {city_count} markets upserted")
-
-    conn.close()
     print(f"[POLY] Done: {saved} total upserts\n")
     return saved
 
