@@ -11,7 +11,7 @@ def get_conn():
 
 def init_db():
     conn = get_conn()
-    c    = conn.cursor()
+    c = conn.cursor()
     c.execute("CREATE TABLE IF NOT EXISTS markets (id TEXT PRIMARY KEY, question TEXT, city TEXT, target_low REAL, target_high REAL, market_type TEXT, unit TEXT, resolved_at BIGINT, created_at BIGINT, outcome TEXT, last_trade_price REAL DEFAULT 0, volume REAL DEFAULT 0)")
     c.execute("CREATE TABLE IF NOT EXISTS price_snapshots (id SERIAL PRIMARY KEY, market_id TEXT, timestamp BIGINT, yes_price REAL, UNIQUE(market_id, timestamp))")
     c.execute("CREATE TABLE IF NOT EXISTS wu_temps (id SERIAL PRIMARY KEY, city TEXT, station TEXT, date TEXT, max_temp_f REAL, UNIQUE(city, date))")
@@ -24,14 +24,3 @@ def init_db():
 
 if __name__ == '__main__':
     init_db()
-```
-
-Also update requirements.txt:
-```
-fastapi==0.115.0
-uvicorn==0.29.0
-requests==2.31.0
-numpy==2.0.0
-pydantic==2.10.6
-httpx==0.27.0
-psycopg2-binary==2.9.9
