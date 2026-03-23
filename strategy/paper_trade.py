@@ -17,7 +17,6 @@ MAX_BETS_DAY  = 3
 
 
 def get_current_capital():
-    """Calculate current capital from all paper trades."""
     conn = get_conn()
     c    = conn.cursor()
     c.execute("SELECT SUM(pnl) FROM paper_trades WHERE outcome IS NOT NULL")
@@ -27,31 +26,25 @@ def get_current_capital():
 
 
 def get_bets_today():
-    """Count paper trades placed today."""
     today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     conn  = get_conn()
     c     = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM paper_trades WHERE trade_date=?", (today,))
+    c.execute("SELECT COUNT(*) FROM paper_trades WHERE trade_date=%s", (today,))
     count = c.fetchone()[0]
     conn.close()
     return count
 
 
 def place_paper_trade(signal, capital):
-    """
-    Place a paper trade for a signal.
-    Records full reasoning so we can audit every decision.
-    """
-    size = min(MAX_BET, max(MIN_BET, capital * BET_SIZE_PCT))
-
+    size  = min(MAX_BET, max(MIN_BET, capital * BET_SIZE_PCT))
     today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     conn  = get_conn()
-
-    conn.execute("""INSERT INTO paper_trades
+    c     = conn.cursor()
+    c.execute("""INSERT INTO paper_trades
         (trade_date, market_id, question, city, entry_price,
          noaa_forecast_f, predicted_range, size, capital_at_entry,
          outcome, pnl)
-        VALUES (?,?,?,?,?,?,?,?,?,NULL,NULL)""",
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,NULL)""",
         (today, signal["market_id"], signal["question"],
          signal["city"], signal["entry_price"],
          signal["forecast_f"],
@@ -59,22 +52,17 @@ def place_paper_trade(signal, capital):
          size, capital))
     conn.commit()
     conn.close()
-
     return {
-        "city":         signal["city"],
-        "question":     signal["question"],
-        "entry_price":  signal["entry_price"],
-        "size":         size,
-        "reasoning":    signal["reasoning"],
-        "forecast_f":   signal["forecast_f"],
+        "city":        signal["city"],
+        "question":    signal["question"],
+        "entry_price": signal["entry_price"],
+        "size":        size,
+        "reasoning":   signal["reasoning"],
+        "forecast_f":  signal["forecast_f"],
     }
 
 
 def run_morning_session():
-    """
-    Morning session — find signals and place paper trades.
-    Called at 7 AM daily.
-    """
     from strategy.signals import scan_signals
 
     today   = datetime.now(timezone.utc).strftime('%Y-%m-%d')
@@ -105,17 +93,11 @@ def run_morning_session():
     log.append(f"\nTotal trades placed: {len(placed)}")
     log.append(f"Remaining capital: ${capital:.2f}")
 
-    # Save session log
     save_log("morning", "\n".join(log))
-
     return placed, "\n".join(log)
 
 
 def run_evening_session():
-    """
-    Evening session — check outcomes of today's trades.
-    Called at 8 PM daily.
-    """
     import requests
 
     today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
@@ -124,7 +106,7 @@ def run_evening_session():
 
     c.execute("""SELECT id, market_id, entry_price, size, city
                  FROM paper_trades
-                 WHERE trade_date=? AND outcome IS NULL""", (today,))
+                 WHERE trade_date=%s AND outcome IS NULL""", (today,))
     pending = c.fetchall()
     conn.close()
 
@@ -134,7 +116,7 @@ def run_evening_session():
 
     resolved = 0
     for row in pending:
-        tid, market_id, entry_price, size, city = row
+        tid, market_id, entry_price, size, city = row["id"], row["market_id"], row["entry_price"], row["size"], row["city"]
 
         try:
             r = requests.get(
@@ -161,8 +143,9 @@ def run_evening_session():
             pnl = size * (1.0 / entry_price - 1.0) if outcome == "Yes" else -size
 
             conn = get_conn()
-            conn.execute("UPDATE paper_trades SET outcome=?, pnl=? WHERE id=?",
-                        (outcome, round(pnl, 4), tid))
+            c2   = conn.cursor()
+            c2.execute("UPDATE paper_trades SET outcome=%s, pnl=%s WHERE id=%s",
+                       (outcome, round(pnl, 4), tid))
             conn.commit()
             conn.close()
 
@@ -179,22 +162,18 @@ def run_evening_session():
 
 
 def save_log(session_type, content):
-    """Save session log to database."""
     conn = get_conn()
     try:
-        conn.execute("""CREATE TABLE IF NOT EXISTS session_logs
-            (id INTEGER PRIMARY KEY AUTOINCREMENT,
-             session_type TEXT, logged_at TEXT, content TEXT)""")
-        conn.execute("INSERT INTO session_logs (session_type, logged_at, content) VALUES (?,?,?)",
-                    (session_type, datetime.now(timezone.utc).isoformat(), content))
+        c = conn.cursor()
+        c.execute("INSERT INTO session_logs (session_type, logged_at, content) VALUES (%s,%s,%s)",
+                  (session_type, datetime.now(timezone.utc).isoformat(), content))
         conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[LOG ERR] {e}")
     conn.close()
 
 
 def get_performance():
-    """Get full performance summary."""
     conn = get_conn()
     c    = conn.cursor()
 
@@ -210,7 +189,6 @@ def get_performance():
                         noaa_forecast_f, predicted_range, outcome, pnl
                  FROM paper_trades ORDER BY trade_date DESC, id DESC""")
     trades = [dict(r) for r in c.fetchall()]
-
     conn.close()
 
     total    = s["total"] or 0
