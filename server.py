@@ -144,8 +144,53 @@ def ingest_status_check():
 
 
 
+
 @app.get("/debug/polymarket")
 def debug_polymarket():
+    import requests as req
+    results = {}
+
+    # Test 1: search by tag
+    try:
+        r = req.get("https://gamma-api.polymarket.com/markets", params={
+            "limit": 5, "tag": "weather", "order": "endDate", "ascending": "false"
+        }, timeout=15)
+        results["tag_weather"] = [m.get("question","") for m in r.json()]
+    except Exception as e:
+        results["tag_weather"] = str(e)
+
+    # Test 2: category weather
+    try:
+        r = req.get("https://gamma-api.polymarket.com/markets", params={
+            "limit": 5, "category": "weather", "order": "endDate", "ascending": "false"
+        }, timeout=15)
+        results["category_weather"] = [m.get("question","") for m in r.json()]
+    except Exception as e:
+        results["category_weather"] = str(e)
+
+    # Test 3: get events with weather tag
+    try:
+        r = req.get("https://gamma-api.polymarket.com/events", params={
+            "limit": 5, "tag": "weather", "order": "endDate", "ascending": "false"
+        }, timeout=15)
+        results["events_weather"] = [m.get("title","") for m in r.json()]
+    except Exception as e:
+        results["events_weather"] = str(e)
+
+    # Test 4: get events with temperature keyword
+    try:
+        r = req.get("https://gamma-api.polymarket.com/events", params={
+            "limit": 5, "search": "temperature", "order": "endDate", "ascending": "false"
+        }, timeout=15)
+        results["events_search_temp"] = [m.get("title","") for m in r.json()]
+    except Exception as e:
+        results["events_search_temp"] = str(e)
+
+    return results
+
+
+@app.get("/debug/polymarket2")
+def debug_polymarket2():
     import requests as req
     try:
         r = req.get("https://gamma-api.polymarket.com/markets", params={
