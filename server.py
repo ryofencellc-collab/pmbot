@@ -112,7 +112,9 @@ def run_ingest_background():
 def startup():
     init_db()
     threading.Thread(target=run_scheduler, daemon=True).start()
-    print("[SERVER] Ready — scheduler running")
+    # Auto-ingest on every startup so DB is never empty after a restart
+    threading.Thread(target=run_ingest_background, daemon=True).start()
+    print("[SERVER] Ready — scheduler + startup ingest running")
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
