@@ -1,6 +1,6 @@
 """
-server.py — FastAPI backend.
-Run: uvicorn server:app --host 0.0.0.0 --port 8000
+server.py - FastAPI backend.
+Serves the dashboard and handles all API calls.
 """
 
 import sys
@@ -9,177 +9,167 @@ import json
 import threading
 sys.path.insert(0, os.path.dirname(__file__))
 
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import HTMLResponse
 import uvicorn
 
 from data.database import get_conn, init_db
 
-app = FastAPI(title="PolyEdge API", version="2.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="PolyEdge", version="3.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"],
+                   allow_methods=["*"], allow_headers=["*"])
 
 
 @app.on_event("startup")
 def startup():
     init_db()
-    def _run():
-        try:
-            from data.ingest import fetch_weather_price_histories
-            print("[STARTUP] Beginning price history load...")
-            fetch_weather_price_histories()
-            print("[STARTUP] Price history load complete")
-        except Exception as e:
-            print(f"[STARTUP ERR] {e}")
-    threading.Thread(target=_run, daemon=True).start()
-    print("[STARTUP] Background thread started")
+    # Create session_logs table if not exists
+    conn = get_conn()
+    conn.execute("""CREATE TABLE IF NOT EXISTS session_logs
+        (id INTEGER PRIMARY KEY AUTOINCREMENT,
+         session_type TEXT, logged_at TEXT, content TEXT)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS paper_trades
+        (id INTEGER PRIMARY KEY AUTOINCREMENT,
+         trade_date TEXT, market_id TEXT, question TEXT,
+         city TEXT, entry_price REAL, noaa_forecast_f REAL,
+         predicted_range TEXT, size REAL, capital_at_entry REAL,
+         outcome TEXT, pnl REAL)""")
+    conn.commit()
+    conn.close()
+    print("[SERVER] Ready")
 
+
+# ── Health & Status ───────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
-    conn    = get_conn()
-    c       = conn.cursor()
-    summary = {}
-    for t in ["markets", "price_snapshots", "crypto_prices", "weather_data",
-              "sports_lines", "backtest_trades", "live_trades"]:
-        c.execute(f"SELECT COUNT(*) FROM {t}")
-        summary[t] = c.fetchone()[0]
-    conn.close()
-    return {"status": "ok", "tables": summary}
-
-
-@app.get("/backtest/summary")
-def backtest_summary():
     conn = get_conn()
     c    = conn.cursor()
-    c.execute('''SELECT run_id, model, win_rate, total_bets, total_pnl,
-                        final_capital, roi, sharpe, max_drawdown, completed_at
-                 FROM backtest_runs ORDER BY roi DESC''')
-    rows = [dict(r) for r in c.fetchall()]
-    conn.close()
-    return rows
-
-
-@app.get("/backtest/equity/{model}")
-def backtest_equity(model: str):
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute('''
-        SELECT sim_date,
-               SUM(SUM(COALESCE(pnl, 0))) OVER (ORDER BY sim_date) + 100 as capital
-        FROM backtest_trades
-        WHERE model=? AND outcome IS NOT NULL
-        GROUP BY sim_date ORDER BY sim_date
-    ''', (model,))
-    rows = [{"date": r[0], "capital": round(r[1], 2)} for r in c.fetchall()]
-    conn.close()
-    return rows
-
-
-@app.get("/backtest/trades/{model}")
-def backtest_trades(model: str, limit: int = 500):
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute('''SELECT sim_date, question, entry_price, size, capital_at_entry,
-                        signal_score, factor_data, outcome, pnl, resolved_date
-                 FROM backtest_trades
-                 WHERE model=? AND outcome IS NOT NULL
-                 ORDER BY sim_date DESC LIMIT ?''', (model, limit))
-    rows = []
-    for r in c.fetchall():
-        row = dict(r)
+    tables = {}
+    for t in ["markets", "price_snapshots", "wu_temps", "paper_trades"]:
         try:
-            row["factor_data"] = json.loads(row["factor_data"] or "{}")
+            c.execute(f"SELECT COUNT(*) FROM {t}")
+            tables[t] = c.fetchone()[0]
         except Exception:
-            row["factor_data"] = {}
-        rows.append(row)
+            tables[t] = 0
     conn.close()
-    return rows
+    return {"status": "ok", "tables": tables}
 
 
-@app.get("/backtest/winner")
-def backtest_winner():
+@app.get("/test")
+def run_test():
+    """Full system test."""
+    import warnings
+    warnings.filterwarnings('ignore')
+    from scheduler import run_system_test
+    return run_system_test()
+
+
+# ── Signals ───────────────────────────────────────────────────────────────────
+
+@app.get("/signals")
+def get_signals():
+    """Get today's signals."""
+    from strategy.signals import scan_signals
+    from datetime import datetime, timezone
+    today   = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    signals, log = scan_signals(today)
+    return {"signals": signals, "log": log, "date": today}
+
+
+@app.post("/morning")
+def morning_session():
+    """Manually trigger morning session."""
+    from strategy.paper_trade import run_morning_session
+    trades, log = run_morning_session()
+    return {"trades": trades, "log": log}
+
+
+@app.post("/evening")
+def evening_session():
+    """Manually trigger evening session."""
+    from strategy.paper_trade import run_evening_session
+    log = run_evening_session()
+    return {"log": log}
+
+
+# ── Performance ───────────────────────────────────────────────────────────────
+
+@app.get("/performance")
+def get_performance():
+    from strategy.paper_trade import get_performance
+    return get_performance()
+
+
+@app.get("/trades")
+def get_trades():
     conn = get_conn()
     c    = conn.cursor()
-    c.execute('SELECT model, roi, win_rate, final_capital FROM backtest_runs ORDER BY roi DESC LIMIT 1')
-    row  = c.fetchone()
+    c.execute("""SELECT trade_date, city, question, entry_price, size,
+                        noaa_forecast_f, predicted_range, outcome, pnl
+                 FROM paper_trades ORDER BY trade_date DESC, id DESC""")
+    trades = [dict(r) for r in c.fetchall()]
     conn.close()
-    return dict(row) if row else {"model": None}
+    return trades
 
 
-@app.get("/live/trades")
-def live_trades():
-    from live.bot import resolve_live
-    resolve_live()
+@app.get("/logs")
+def get_logs():
     conn = get_conn()
     c    = conn.cursor()
-    c.execute('''SELECT trade_date, model, question, entry_price, size,
-                        capital_at_entry, signal_score, outcome, pnl, tx_hash
-                 FROM live_trades ORDER BY id DESC''')
-    rows = [dict(r) for r in c.fetchall()]
+    try:
+        c.execute("""SELECT session_type, logged_at, content
+                     FROM session_logs ORDER BY id DESC LIMIT 10""")
+        logs = [dict(r) for r in c.fetchall()]
+    except Exception:
+        logs = []
     conn.close()
-    return rows
+    return logs
 
 
-@app.get("/live/summary")
-def live_summary():
-    from live.bot import resolve_live
-    resolve_live()
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute('''SELECT COUNT(*) as total,
-                        SUM(CASE WHEN outcome="Yes" THEN 1 ELSE 0 END) as wins,
-                        SUM(COALESCE(pnl, 0)) as total_pnl
-                 FROM live_trades WHERE outcome IS NOT NULL''')
-    row  = dict(c.fetchone())
-    conn.close()
-    total = row["total"] or 1
-    return {
-        "total_bets": row["total"], "wins": row["wins"] or 0,
-        "win_rate":   round((row["wins"] or 0) / total, 4),
-        "total_pnl":  round(row["total_pnl"] or 0, 2),
-    }
+# ── Dashboard ─────────────────────────────────────────────────────────────────
 
-
-class BacktestConfig(BaseModel):
-    starting_capital: float = 100.0
-    principal:        float = 100.0
-    max_bets_per_day: int   = 3
-    min_signal_score: float = 0.05
-    kelly_fraction:   float = 0.25
-    days_back:        int   = 1095
-
-
-@app.post("/run/ingest")
-def trigger_ingest(days_back: int = 1095, bg: BackgroundTasks = None):
-    def _run():
-        from data.ingest import run_full_ingest
-        run_full_ingest(days_back=days_back)
-    if bg:
-        bg.add_task(_run)
-        return {"status": "ingestion started in background"}
-    _run()
-    return {"status": "complete"}
-
-
-@app.post("/run/backtest")
-def trigger_backtest(cfg: BacktestConfig, bg: BackgroundTasks = None):
-    def _run():
-        from backtest.simulator import run_all_backtests
-        run_all_backtests(config=cfg.dict())
-    if bg:
-        bg.add_task(_run)
-        return {"status": "backtest started in background"}
-    _run()
-    return {"status": "complete"}
-
-
-@app.post("/run/live-day")
-def trigger_live_day(model: str = None):
-    from live.bot import run_live_day
-    run_live_day(model=model)
-    return {"status": "complete"}
-
-
-if __name__ == "__main__":
-    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=False)
+@app.get("/", response_class=HTMLResponse)
+def dashboard():
+    return """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PolyEdge</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0f; color: #e8e8f0; font-family: -apple-system, sans-serif; }
+  .header { background: #0f0f1a; border-bottom: 1px solid #1a1a2e; padding: 16px 20px;
+            display: flex; align-items: center; justify-content: space-between; }
+  .logo { font-size: 18px; font-weight: 700; }
+  .logo span { color: #00ff88; }
+  .status-bar { display: flex; gap: 8px; flex-wrap: wrap; padding: 12px 20px;
+                background: #0f0f1a; border-bottom: 1px solid #1a1a2e; }
+  .status-item { display: flex; align-items: center; gap: 6px; font-size: 12px;
+                 padding: 4px 10px; background: #1a1a2e; border-radius: 20px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .dot-green { background: #00ff88; box-shadow: 0 0 6px #00ff88; }
+  .dot-red   { background: #ff4444; box-shadow: 0 0 6px #ff4444; }
+  .dot-gray  { background: #666; }
+  .tabs { display: flex; border-bottom: 1px solid #1a1a2e; }
+  .tab { padding: 12px 20px; font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent;
+         color: #666; transition: all 0.2s; }
+  .tab.active { color: #00ff88; border-bottom-color: #00ff88; }
+  .content { padding: 20px; max-width: 800px; margin: 0 auto; }
+  .card { background: #0f0f1a; border: 1px solid #1a1a2e; border-radius: 12px;
+          padding: 16px; margin-bottom: 16px; }
+  .card-title { font-size: 11px; color: #666; letter-spacing: 0.1em;
+                text-transform: uppercase; margin-bottom: 12px; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .stat { text-align: center; }
+  .stat-val { font-size: 24px; font-weight: 700; font-family: monospace; color: #00ff88; }
+  .stat-label { font-size: 11px; color: #666; margin-top: 4px; }
+  .signal { border: 1px solid #1a2e1a; background: #0d1a0d; border-radius: 10px;
+            padding: 14px; margin-bottom: 12px; }
+  .signal-city { font-size: 16px; font-weight: 700; color: #00ff88; }
+  .signal-q { font-size: 13px; color: #aaa; margin: 6px 0; }
+  .signal-row { display: flex; gap: 16px; font-size: 12px; margin-top: 8px; flex-wrap: wrap; }
+  .signal-tag { background: #1a2e1a; padding: 3px 8px; border-radius: 4px; color: #00ff88; }
+  .trade { b
