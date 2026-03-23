@@ -102,6 +102,23 @@ def run_test():
     return results
 
 
+@app.get("/ingest")
+def run_ingest():
+    try:
+        from data.ingest import run_full_ingest
+        run_full_ingest(days_back=120)
+        conn = get_conn()
+        c = conn.cursor()
+        counts = {}
+        for t in ["markets", "wu_temps", "paper_trades", "session_logs"]:
+            c.execute(f"SELECT COUNT(*) FROM {t}")
+            counts[t] = c.fetchone()[0]
+        conn.close()
+        return {"status": "ok", "tables": counts}
+    except Exception as e:
+        return {"status": "error", "log": str(e)}
+
+
 @app.get("/signals")
 def get_signals():
     try:
