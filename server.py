@@ -172,4 +172,301 @@ def dashboard():
   .signal-q { font-size: 13px; color: #aaa; margin: 6px 0; }
   .signal-row { display: flex; gap: 16px; font-size: 12px; margin-top: 8px; flex-wrap: wrap; }
   .signal-tag { background: #1a2e1a; padding: 3px 8px; border-radius: 4px; color: #00ff88; }
-  .trade { b
+  .trade { border-bottom: 1px solid #1a1a2e; padding: 12px 0; }
+  .trade:last-child { border-bottom: none; }
+  .trade-header { display: flex; justify-content: space-between; align-items: center; }
+  .trade-city { font-weight: 600; font-size: 14px; }
+  .trade-pnl { font-family: monospace; font-weight: 700; }
+  .win { color: #00ff88; }
+  .loss { color: #ff4444; }
+  .pending { color: #ffaa00; }
+  .trade-detail { font-size: 12px; color: #666; margin-top: 4px; }
+  .btn { background: #00ff88; color: #000; border: none; padding: 12px 24px;
+         border-radius: 8px; font-weight: 700; font-size: 14px; cursor: pointer;
+         width: 100%; margin-bottom: 12px; }
+  .btn-secondary { background: #1a1a2e; color: #00ff88; border: 1px solid #00ff88; }
+  .btn:active { opacity: 0.8; }
+  .test-result { border-radius: 8px; padding: 12px; margin-bottom: 8px;
+                 font-size: 13px; display: flex; justify-content: space-between; }
+  .test-ok   { background: #0d1a0d; border: 1px solid #1a3a1a; }
+  .test-err  { background: #1a0d0d; border: 1px solid #3a1a1a; }
+  .log-box { background: #060608; border: 1px solid #1a1a2e; border-radius: 8px;
+             padding: 12px; font-family: monospace; font-size: 11px; color: #888;
+             white-space: pre-wrap; max-height: 300px; overflow-y: auto; }
+  .empty { text-align: center; color: #444; padding: 40px 20px; font-size: 14px; }
+  .equity { font-size: 32px; font-weight: 700; font-family: monospace; }
+  .equity.positive { color: #00ff88; }
+  .alert { background: #1a0d0d; border: 1px solid #ff4444; border-radius: 8px;
+           padding: 12px; margin-bottom: 12px; font-size: 13px; color: #ff8888; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">POLY<span>EDGE</span></div>
+  <div id="time" style="font-size:12px;color:#666"></div>
+</div>
+
+<div class="status-bar" id="statusBar">
+  <div class="status-item"><div class="dot dot-gray"></div>Loading...</div>
+</div>
+
+<div class="tabs">
+  <div class="tab active" onclick="showTab('signals')">Signals</div>
+  <div class="tab" onclick="showTab('trades')">Trades</div>
+  <div class="tab" onclick="showTab('performance')">Performance</div>
+  <div class="tab" onclick="showTab('system')">System</div>
+</div>
+
+<div class="content">
+
+  <!-- SIGNALS TAB -->
+  <div id="tab-signals">
+    <div class="card">
+      <div class="card-title">Today's Signals</div>
+      <div id="signalsContent"><div class="empty">Loading signals...</div></div>
+    </div>
+    <button class="btn" onclick="runMorning()">▶ Run Morning Session Now</button>
+    <button class="btn btn-secondary" onclick="loadSignals()">↻ Refresh Signals</button>
+  </div>
+
+  <!-- TRADES TAB -->
+  <div id="tab-trades" style="display:none">
+    <div class="card">
+      <div class="card-title">Trade Log — Every Decision Explained</div>
+      <div id="tradesContent"><div class="empty">Loading trades...</div></div>
+    </div>
+    <button class="btn btn-secondary" onclick="runEvening()">▶ Check Today's Outcomes</button>
+  </div>
+
+  <!-- PERFORMANCE TAB -->
+  <div id="tab-performance" style="display:none">
+    <div class="card">
+      <div class="card-title">Paper Trading Results</div>
+      <div id="perfContent"><div class="empty">Loading performance...</div></div>
+    </div>
+  </div>
+
+  <!-- SYSTEM TAB -->
+  <div id="tab-system" style="display:none">
+    <div class="card">
+      <div class="card-title">System Status</div>
+      <button class="btn" onclick="runTest()">🔍 Run Full System Test</button>
+      <div id="testResults"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Session Logs</div>
+      <div id="logsContent"><div class="empty">No logs yet</div></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const API = '';
+
+// Update time
+setInterval(() => {
+  document.getElementById('time').textContent =
+    new Date().toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit'});
+}, 1000);
+
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach((t,i) => {
+    t.classList.toggle('active', ['signals','trades','performance','system'][i] === name);
+  });
+  ['signals','trades','performance','system'].forEach(t => {
+    document.getElementById('tab-'+t).style.display = t === name ? 'block' : 'none';
+  });
+  if (name === 'signals')     loadSignals();
+  if (name === 'trades')      loadTrades();
+  if (name === 'performance') loadPerformance();
+  if (name === 'system')      loadLogs();
+}
+
+async function loadStatus() {
+  try {
+    const r = await fetch(API + '/health');
+    const d = await r.json();
+    const bar = document.getElementById('statusBar');
+    bar.innerHTML = `
+      <div class="status-item"><div class="dot dot-green"></div>Server Online</div>
+      <div class="status-item"><div class="dot dot-green"></div>DB: ${d.tables.markets?.toLocaleString()} markets</div>
+      <div class="status-item"><div class="dot dot-green"></div>${d.tables.paper_trades || 0} paper trades</div>
+    `;
+  } catch(e) {
+    document.getElementById('statusBar').innerHTML =
+      '<div class="status-item"><div class="dot dot-red"></div>Server offline</div>';
+  }
+}
+
+async function loadSignals() {
+  document.getElementById('signalsContent').innerHTML = '<div class="empty">Scanning markets...</div>';
+  try {
+    const r = await fetch(API + '/signals');
+    const d = await r.json();
+    const el = document.getElementById('signalsContent');
+    if (!d.signals || d.signals.length === 0) {
+      el.innerHTML = '<div class="empty">No signals found for today.<br>Markets may not be open yet or no edge detected.</div>';
+      return;
+    }
+    el.innerHTML = d.signals.map(s => `
+      <div class="signal">
+        <div class="signal-city">🌡 ${s.city}</div>
+        <div class="signal-q">${s.question}</div>
+        <div class="signal-row">
+          <span class="signal-tag">Forecast: ${s.forecast_f}°F</span>
+          <span class="signal-tag">Entry: ${(s.entry_price*100).toFixed(1)}¢</span>
+          <span class="signal-tag">Edge: ${(s.edge*100).toFixed(0)}%</span>
+          <span class="signal-tag">EV: ${s.ev.toFixed(1)}x</span>
+        </div>
+        <div class="trade-detail" style="margin-top:8px">${s.reasoning}</div>
+      </div>
+    `).join('');
+  } catch(e) {
+    document.getElementById('signalsContent').innerHTML =
+      '<div class="alert">Error loading signals: ' + e.message + '</div>';
+  }
+}
+
+async function loadTrades() {
+  try {
+    const r = await fetch(API + '/trades');
+    const d = await r.json();
+    const el = document.getElementById('tradesContent');
+    if (!d.length) {
+      el.innerHTML = '<div class="empty">No trades yet. Run morning session to start.</div>';
+      return;
+    }
+    el.innerHTML = d.map(t => {
+      const cls = t.outcome === 'Yes' ? 'win' : t.outcome === 'No' ? 'loss' : 'pending';
+      const icon = t.outcome === 'Yes' ? '✅' : t.outcome === 'No' ? '❌' : '⏳';
+      const pnl  = t.pnl ? (t.pnl > 0 ? '+$'+t.pnl.toFixed(2) : '-$'+Math.abs(t.pnl).toFixed(2)) : 'Pending';
+      return `
+        <div class="trade">
+          <div class="trade-header">
+            <div class="trade-city">${icon} ${t.city} — ${t.trade_date}</div>
+            <div class="trade-pnl ${cls}">${pnl}</div>
+          </div>
+          <div class="trade-detail">${t.question}</div>
+          <div class="trade-detail">Entry: ${(t.entry_price*100).toFixed(1)}¢ | Size: $${t.size?.toFixed(2)} | Forecast: ${t.noaa_forecast_f}°F | Range: ${t.predicted_range}</div>
+        </div>
+      `;
+    }).join('');
+  } catch(e) {
+    document.getElementById('tradesContent').innerHTML =
+      '<div class="alert">Error: ' + e.message + '</div>';
+  }
+}
+
+async function loadPerformance() {
+  try {
+    const r = await fetch(API + '/performance');
+    const d = await r.json();
+    const el = document.getElementById('perfContent');
+    const roi_class = d.total_pnl >= 0 ? 'positive' : '';
+    el.innerHTML = `
+      <div style="text-align:center;padding:20px 0">
+        <div class="equity ${roi_class}">$${d.final_capital?.toFixed(2) || '100.00'}</div>
+        <div style="color:#666;font-size:12px;margin-top:4px">Starting from $100.00</div>
+      </div>
+      <div class="stats">
+        <div class="stat">
+          <div class="stat-val">${d.win_rate || 0}%</div>
+          <div class="stat-label">Win Rate</div>
+        </div>
+        <div class="stat">
+          <div class="stat-val">${d.total_bets || 0}</div>
+          <div class="stat-label">Total Bets</div>
+        </div>
+        <div class="stat">
+          <div class="stat-val">${d.roi || 0}%</div>
+          <div class="stat-label">ROI</div>
+        </div>
+      </div>
+      <div style="margin-top:16px;font-size:12px;color:#666;text-align:center">
+        Best trade: $${d.best_trade || 0} | Worst: $${d.worst_trade || 0}
+      </div>
+    `;
+  } catch(e) {
+    document.getElementById('perfContent').innerHTML =
+      '<div class="alert">Error: ' + e.message + '</div>';
+  }
+}
+
+async function runTest() {
+  document.getElementById('testResults').innerHTML = '<div class="empty">Running tests...</div>';
+  try {
+    const r = await fetch(API + '/test');
+    const d = await r.json();
+    document.getElementById('testResults').innerHTML = Object.entries(d).map(([k,v]) => `
+      <div class="test-result ${v.status === 'ok' ? 'test-ok' : 'test-err'}">
+        <span>${v.status === 'ok' ? '✅' : '❌'} ${k}</span>
+        <span style="color:#666;font-size:12px">${v.message}</span>
+      </div>
+    `).join('');
+  } catch(e) {
+    document.getElementById('testResults').innerHTML =
+      '<div class="alert">Test failed: ' + e.message + '</div>';
+  }
+}
+
+async function loadLogs() {
+  try {
+    const r = await fetch(API + '/logs');
+    const d = await r.json();
+    const el = document.getElementById('logsContent');
+    if (!d.length) { el.innerHTML = '<div class="empty">No logs yet</div>'; return; }
+    el.innerHTML = d.map(l => `
+      <div style="margin-bottom:12px">
+        <div style="font-size:11px;color:#666;margin-bottom:4px">${l.session_type} — ${l.logged_at}</div>
+        <div class="log-box">${l.content}</div>
+      </div>
+    `).join('');
+  } catch(e) {}
+}
+
+async function runMorning() {
+  const btn = event.target;
+  btn.textContent = 'Running...';
+  btn.disabled = true;
+  try {
+    const r = await fetch(API + '/morning', {method:'POST'});
+    const d = await r.json();
+    alert('Morning session complete. ' + (d.trades?.length || 0) + ' trades placed.');
+    loadSignals();
+    loadStatus();
+  } catch(e) {
+    alert('Error: ' + e.message);
+  }
+  btn.textContent = '▶ Run Morning Session Now';
+  btn.disabled = false;
+}
+
+async function runEvening() {
+  const btn = event.target;
+  btn.textContent = 'Checking...';
+  btn.disabled = true;
+  try {
+    const r = await fetch(API + '/evening', {method:'POST'});
+    alert('Evening session complete. Outcomes recorded.');
+    loadTrades();
+    loadStatus();
+  } catch(e) {
+    alert('Error: ' + e.message);
+  }
+  btn.textContent = '▶ Check Today\'s Outcomes';
+  btn.disabled = false;
+}
+
+// Init
+loadStatus();
+loadSignals();
+setInterval(loadStatus, 30000);
+</script>
+</body>
+</html>"""
+
+
+if __name__ == "__main__":
+    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=False)
