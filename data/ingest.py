@@ -1,8 +1,8 @@
 """
-ingest.py - Pulls all data needed for backtest.
-1. Weather Underground historical max temps (confirmed resolution source)
-2. Polymarket weather markets with outcomes
-3. Price snapshots for each market
+ingest.py - Pulls all data needed.
+Searches Polymarket for temperature markets by keyword.
+Pulls WU historical temps.
+Pulls price histories.
 """
 
 import requests
@@ -14,7 +14,6 @@ from data.database import get_conn, init_db
 
 WU_API_KEY = "e1f10a1e78da46f5b10a1e78da96f525"
 
-# Confirmed WU stations matching Polymarket resolution
 CITY_STATIONS = {
     "Chicago":       "KORD",
     "Dallas":        "KDFW",
@@ -29,6 +28,20 @@ CITY_STATIONS = {
 
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 CLOB_BASE  = "https://clob.polymarket.com"
+
+# Search keywords to find temperature markets
+SEARCH_TERMS = [
+    "temperature Chicago",
+    "temperature Dallas",
+    "temperature Atlanta",
+    "temperature Miami",
+    "temperature New York",
+    "temperature Seattle",
+    "temperature Boston",
+    "temperature Los Angeles",
+    "temperature San Francisco",
+    "highest temperature",
+]
 
 
 def safe_get(url, params=None, retries=3, delay=1.0):
@@ -49,7 +62,6 @@ def safe_get(url, params=None, retries=3, delay=1.0):
 # ── 1. Weather Underground Historical Temps ───────────────────────────────────
 
 def fetch_wu_temps(days_back=120):
-    """Pull historical max temps from WU for each city."""
     end_date   = date.today()
     start_date = end_date - timedelta(days=days_back)
     conn       = get_conn()
@@ -58,14 +70,13 @@ def fetch_wu_temps(days_back=120):
     print(f"\n[WU] Fetching temps {start_date} → {end_date}...")
 
     for city, station in CITY_STATIONS.items():
-        current = start_date
+        current    = start_date
         city_saved = 0
 
         while current <= end_date:
             date_str = current.strftime('%Y-%m-%d')
             date_fmt = current.strftime('%Y%m%d')
 
-            # Check if already have this
             c = conn.cursor()
             c.execute("SELECT COUNT(*) FROM wu_temps WHERE city=%s AND date=%s", (city, date_str))
             if c.fetchone()[0] > 0:
@@ -79,11 +90,12 @@ def fetch_wu_temps(days_back=120):
             )
 
             if r.status_code == 200:
-                obs = r.json().get("observations", [])
+                obs   = r.json().get("observations", [])
                 temps = [o.get("temp") for o in obs if o.get("temp")]
                 if temps:
                     max_t = max(temps)
-                    conn.cursor().execute(
+                    c2    = conn.cursor()
+                    c2.execute(
                         "INSERT INTO wu_temps (city, station, date, max_temp_f) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
                         (city, station, date_str, max_t)
                     )
@@ -104,21 +116,9 @@ def fetch_wu_temps(days_back=120):
 # ── 2. Polymarket Weather Markets ─────────────────────────────────────────────
 
 def parse_market(question):
-    """
-    Parse Polymarket temperature question into structured data.
-    Returns dict with city, target_low, target_high, unit, market_type
-
-    Formats:
-    - "between 76-77°F" → {low:76, high:77, unit:F, type:range}
-    - "56°F or higher"  → {low:56, high:999, unit:F, type:above}
-    - "63°F or below"   → {low:-999, high:63, unit:F, type:below}
-    - "be 12°C"         → {low:12, high:12, unit:C, type:exact}
-    - "18°C or higher"  → {low:18, high:999, unit:C, type:above}
-    """
-    q = question.lower()
-
-    # Find city
+    q    = question.lower()
     city = None
+
     for c in CITY_STATIONS.keys():
         if c.lower() in q:
             city = c
@@ -126,30 +126,31 @@ def parse_market(question):
     if not city:
         return None
 
-    # Determine unit
     unit = "F" if "°f" in q or "fahrenheit" in q else "C"
 
-    # Parse range formats
-    # "between 76-77"
     m = re.search(r'between\s+(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)', q)
     if m:
         return {"city": city, "target_low": float(m.group(1)),
                 "target_high": float(m.group(2)), "unit": unit, "market_type": "range"}
 
-    # "56F or higher" / "18°C or higher"
     m = re.search(r'(\d+(?:\.\d+)?)\s*°?[fc]?\s*or\s*higher', q)
     if m:
         return {"city": city, "target_low": float(m.group(1)),
                 "target_high": 9999, "unit": unit, "market_type": "above"}
 
-    # "63F or below" / "7°C or below"
     m = re.search(r'(\d+(?:\.\d+)?)\s*°?[fc]?\s*or\s*below', q)
     if m:
         return {"city": city, "target_low": -9999,
                 "target_high": float(m.group(1)), "unit": unit, "market_type": "below"}
 
-    # "be 12°C" exact
     m = re.search(r'be\s+(\d+(?:\.\d+)?)\s*°?[fc]?\s+on', q)
+    if m:
+        t = float(m.group(1))
+        return {"city": city, "target_low": t,
+                "target_high": t, "unit": unit, "market_type": "exact"}
+
+    # fallback: single temp mentioned
+    m = re.search(r'(\d+(?:\.\d+)?)\s*°[fc]', q)
     if m:
         t = float(m.group(1))
         return {"city": city, "target_low": t,
@@ -159,95 +160,101 @@ def parse_market(question):
 
 
 def fetch_polymarket_markets(days_back=120):
-    """Pull weather markets for our tracked cities only."""
     conn   = get_conn()
     c      = conn.cursor()
     cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
-    offset = 0
-    limit  = 500
     saved  = 0
-    stop   = False
 
-    print(f"[POLY] Fetching markets since {cutoff.date()}...")
+    print(f"[POLY] Searching temperature markets since {cutoff.date()}...")
 
-    while not stop:
-        data = safe_get(f"{GAMMA_BASE}/markets", params={
-            "closed": "true", "limit": limit, "offset": offset,
-            "order": "startDate", "ascending": "false"
-        })
-        if not data:
-            break
+    for term in SEARCH_TERMS:
+        print(f"  Searching: '{term}'")
+        offset = 0
+        limit  = 100
 
-        batch = 0
-        for m in data:
-            try:
-                end_str = m.get("endDate") or m.get("endDateIso") or ""
-                if not end_str:
-                    continue
-                end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
-            except Exception:
-                continue
+        while True:
+            data = safe_get(f"{GAMMA_BASE}/markets", params={
+                "limit":     limit,
+                "offset":    offset,
+                "search":    term,
+                "order":     "endDate",
+                "ascending": "false",
+            })
 
-            if end_dt < cutoff:
-                stop = True
-                continue
+            if not data:
+                break
 
-            question = m.get("question", "")
-            parsed   = parse_market(question)
-            if not parsed:
-                continue
+            batch = 0
+            stop  = False
 
-            # Get outcome from outcomePrices
-            prices = m.get("outcomePrices", "[]")
-            if isinstance(prices, str):
+            for m in data:
                 try:
-                    prices = json.loads(prices)
+                    end_str = m.get("endDate") or m.get("endDateIso") or ""
+                    if not end_str:
+                        continue
+                    end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
                 except Exception:
-                    prices = []
-            outcome = None
-            if prices:
-                if str(prices[0]) == "1":
-                    outcome = "Yes"
-                elif str(prices[1]) == "1":
-                    outcome = "No"
+                    continue
 
-            market_id = str(m.get("id") or "")
-            if not market_id:
-                continue
+                if end_dt < cutoff:
+                    stop = True
+                    continue
 
-            try:
-                start_str  = m.get("startDate", "")
-                created_at = int(datetime.fromisoformat(
-                    start_str.replace("Z", "+00:00")).timestamp()) if start_str else 0
-            except Exception:
-                created_at = 0
+                question = m.get("question", "")
+                parsed   = parse_market(question)
+                if not parsed:
+                    continue
 
-            try:
-                c.execute("""INSERT INTO markets
-                    (id, question, city, target_low, target_high, market_type,
-                     unit, resolved_at, created_at, outcome, last_trade_price, volume)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    ON CONFLICT (id) DO NOTHING""",
-                    (market_id, question, parsed["city"],
-                     parsed["target_low"], parsed["target_high"],
-                     parsed["market_type"], parsed["unit"],
-                     int(end_dt.timestamp()), created_at, outcome,
-                     float(m.get("lastTradePrice") or 0),
-                     float(m.get("volume") or 0)))
-                if c.rowcount > 0:
-                    batch += 1
-            except Exception as e:
-                continue
+                prices = m.get("outcomePrices", "[]")
+                if isinstance(prices, str):
+                    try:
+                        prices = json.loads(prices)
+                    except Exception:
+                        prices = []
+                outcome = None
+                if prices:
+                    if str(prices[0]) == "1":
+                        outcome = "Yes"
+                    elif str(prices[1]) == "1":
+                        outcome = "No"
 
-        conn.commit()
-        saved += batch
-        print(f"  offset={offset} | saved={batch} | total={saved}")
+                market_id = str(m.get("id") or "")
+                if not market_id:
+                    continue
 
-        if len(data) < limit or stop:
-            break
+                try:
+                    start_str  = m.get("startDate", "")
+                    created_at = int(datetime.fromisoformat(
+                        start_str.replace("Z", "+00:00")).timestamp()) if start_str else 0
+                except Exception:
+                    created_at = 0
 
-        offset += limit
-        time.sleep(0.3)
+                try:
+                    c.execute("""INSERT INTO markets
+                        (id, question, city, target_low, target_high, market_type,
+                         unit, resolved_at, created_at, outcome, last_trade_price, volume)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT (id) DO NOTHING""",
+                        (market_id, question, parsed["city"],
+                         parsed["target_low"], parsed["target_high"],
+                         parsed["market_type"], parsed["unit"],
+                         int(end_dt.timestamp()), created_at, outcome,
+                         float(m.get("lastTradePrice") or 0),
+                         float(m.get("volume") or 0)))
+                    if c.rowcount > 0:
+                        batch += 1
+                except Exception:
+                    continue
+
+            conn.commit()
+            saved += batch
+            print(f"    offset={offset} | saved={batch} | total={saved}")
+
+            if len(data) < limit or stop:
+                break
+
+            offset += limit
+            time.sleep(0.3)
 
     conn.close()
     print(f"[POLY] Done: {saved} markets\n")
@@ -257,13 +264,12 @@ def fetch_polymarket_markets(days_back=120):
 # ── 3. Price Histories ────────────────────────────────────────────────────────
 
 def fetch_price_histories():
-    """Pull price histories using interval=all to get full history."""
     conn = get_conn()
     c    = conn.cursor()
     c.execute("""SELECT id FROM markets
                  WHERE outcome IS NOT NULL AND volume > 100
                  ORDER BY volume DESC""")
-    market_ids = [r[0] for r in c.fetchall()]
+    market_ids = [r["id"] for r in c.fetchall()]
     conn.close()
 
     print(f"[PRICES] Fetching price histories for {len(market_ids)} markets...")
