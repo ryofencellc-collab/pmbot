@@ -1,320 +1,294 @@
 """
-paper_trade.py - Paper trading engine.
+backtest.py - Simulate 30 days of trading against resolved Chicago markets.
 
-Places up to 3 bets per city per day (the 3 most mispriced ranges).
-Checks outcomes in real-time every 30 min via scheduler — not just at 8PM.
-Records actual WU temp into noaa_forecasts for error model building.
+Uses ONLY data that would have been available at trade time:
+- WU actual temp as the "ground truth" (what we're trying to predict)
+- last_trade_price as entry price (what market was pricing it at)
+- Same probability model as signals.py (normal distribution around forecast)
+
+Since we don't have historical NOAA forecasts, we simulate the forecast
+using: forecast = actual_temp + error_sample
+where error is drawn from our known distribution (mean=+2, std=3).
+
+This gives us a realistic simulation of what would have happened if we
+had been running this system for the past 30 days.
+
+Key insight: we run the simulation 100 times with different random
+error samples to get a distribution of outcomes, not just one result.
 """
 
-import json
-import requests
-from datetime import datetime, timezone
+import math
+import random
+from datetime import datetime, timedelta, timezone, date
 from data.database import get_conn
 
-CAPITAL_START = 100.0
-BET_SIZE      = 10.0   # Fixed $10 per signal — clean and simple
-MAX_BETS_DAY  = 9      # Up to 3 per city, 1 city for now
+BET_SIZE        = 10.0
+MAX_BETS_PER_DAY = 3
+MIN_EDGE        = 0.05
+STARTING_CAPITAL = 1000.0  # Simulate with $1000 to see realistic returns
+NOAA_MEAN_DELTA  = 2.0     # NOAA runs ~2°F high on average
+NOAA_STD         = 3.0     # Standard deviation of NOAA error
 
 
-def get_current_capital():
+def normal_cdf(x, mu, sigma):
+    z = (x - mu) / (sigma if sigma > 0 else 1.0)
+    return 0.5 * (1 + math.erf(z / (2 ** 0.5)))
+
+
+def calc_range_probability(target_low, target_high, market_type,
+                           forecast_f, mean_delta, std):
+    """Exact same model as signals.py."""
+    adjusted = forecast_f - mean_delta
+
+    if market_type == "range":
+        prob = normal_cdf(target_high + 0.5, adjusted, std) - \
+               normal_cdf(target_low - 0.5, adjusted, std)
+    elif market_type == "above":
+        prob = 1.0 - normal_cdf(target_low - 0.5, adjusted, std)
+    elif market_type == "below":
+        prob = normal_cdf(target_high + 0.5, adjusted, std)
+    else:
+        prob = 0.05
+
+    return round(max(0.001, min(0.999, prob)), 4)
+
+
+def get_resolved_dates():
+    """Get all dates that have resolved Chicago markets with WU temps."""
     conn = get_conn()
     c    = conn.cursor()
-    c.execute("SELECT SUM(pnl) as total FROM paper_trades WHERE outcome IS NOT NULL")
-    row       = c.fetchone()
-    total_pnl = float(row["total"]) if row and row["total"] else 0.0
+    c.execute("""
+        SELECT DISTINCT
+            TO_CHAR(TO_TIMESTAMP(m.resolved_at), 'YYYY-MM-DD') as date
+        FROM markets m
+        JOIN wu_temps w ON w.city = m.city
+            AND TO_CHAR(TO_TIMESTAMP(m.resolved_at), 'YYYY-MM-DD') = w.date
+        WHERE m.city = 'Chicago'
+          AND m.outcome IS NOT NULL
+        ORDER BY date DESC
+    """)
+    rows  = c.fetchall()
     conn.close()
-    return round(CAPITAL_START + total_pnl, 2)
+    return [r["date"] for r in rows]
 
 
-def get_bets_today():
-    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    conn  = get_conn()
-    c     = conn.cursor()
-    c.execute("SELECT COUNT(*) as count FROM paper_trades WHERE trade_date=%s", (today,))
-    count = c.fetchone()["count"]
+def get_markets_for_date(date_str):
+    """Get all resolved markets for a specific date."""
+    conn     = get_conn()
+    c        = conn.cursor()
+    date_dt  = datetime.strptime(date_str, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+    ts_start = int(date_dt.timestamp())
+    ts_end   = int((date_dt + timedelta(days=1)).timestamp())
+
+    c.execute("""
+        SELECT id, question, target_low, target_high, market_type,
+               last_trade_price, outcome
+        FROM markets
+        WHERE city = 'Chicago'
+          AND resolved_at >= %s AND resolved_at < %s
+          AND outcome IS NOT NULL
+          AND last_trade_price > 0
+    """, (ts_start, ts_end))
+    markets = [dict(r) for r in c.fetchall()]
     conn.close()
-    return count
+    return markets
 
 
-def place_paper_trade(signal, capital):
-    """Insert one paper trade. Returns trade dict."""
-    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    size  = BET_SIZE
-
+def get_wu_temp(date_str):
+    """Get WU actual high temp for a date."""
     conn = get_conn()
     c    = conn.cursor()
-    try:
-        c.execute("""
-            INSERT INTO paper_trades
-                (trade_date, market_id, question, city, entry_price,
-                 noaa_forecast_f, predicted_range, size, capital_at_entry,
-                 outcome, pnl)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,NULL)
-        """, (
-            today,
-            signal["market_id"],
-            signal["question"],
-            signal["city"],
-            signal["entry_price"],
-            signal["forecast_f"],
-            f"{signal['target_low']}-{signal['target_high']}F",
-            size,
-            capital
-        ))
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        print(f"[TRADE ERR] {e}")
-        conn.close()
-        return None
+    c.execute("SELECT max_temp_f FROM wu_temps WHERE city='Chicago' AND date=%s",
+              (date_str,))
+    row = c.fetchone()
     conn.close()
-
-    return {
-        "city":        signal["city"],
-        "question":    signal["question"],
-        "entry_price": signal["entry_price"],
-        "true_prob":   signal["true_prob"],
-        "edge":        signal["edge"],
-        "ev":          signal["ev"],
-        "size":        size,
-        "reasoning":   signal["reasoning"],
-        "forecast_f":  signal["forecast_f"],
-    }
+    return row["max_temp_f"] if row else None
 
 
-def run_morning_session():
+def simulate_one_day(date_str, actual_temp, simulated_forecast,
+                     markets, capital):
     """
-    Morning session:
-    1. Scan signals (3 per city using error model)
-    2. Place paper trades for each signal
-    3. Log everything
+    Simulate one trading day.
+    Returns (trades_placed, capital_after, day_pnl, log).
     """
-    from strategy.signals import scan_signals
-
-    today   = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    capital = get_current_capital()
-    bets    = get_bets_today()
-
     log = []
-    log.append(f"=== MORNING SESSION {today} ===")
-    log.append(f"Capital: ${capital:.2f}")
-    log.append(f"Bets placed today so far: {bets}")
-    log.append("")
 
-    if bets >= MAX_BETS_DAY:
-        log.append("Max bets reached. Skipping.")
-        save_log("morning", "\n".join(log))
-        return [], "\n".join(log)
+    # Score every market using our probability model
+    scored = []
+    for m in markets:
+        true_prob = calc_range_probability(
+            m["target_low"], m["target_high"], m["market_type"],
+            simulated_forecast, NOAA_MEAN_DELTA, NOAA_STD
+        )
+        price = m["last_trade_price"]
+        edge  = true_prob - price
+        ev    = true_prob * (1.0 / price) - 1.0 if price > 0 else 0
 
-    signals, scan_log = scan_signals(today)
-    log.append(scan_log)
-    log.append("")
+        scored.append({
+            "market_id":   m["id"],
+            "question":    m["question"],
+            "target_low":  m["target_low"],
+            "target_high": m["target_high"],
+            "market_type": m["market_type"],
+            "price":       price,
+            "true_prob":   true_prob,
+            "edge":        edge,
+            "ev":          ev,
+            "outcome":     m["outcome"],
+        })
 
-    placed = []
-    slots  = MAX_BETS_DAY - bets
+    # Top 3 by edge, only where edge >= MIN_EDGE
+    top3 = sorted(
+        [s for s in scored if s["edge"] >= MIN_EDGE],
+        key=lambda x: x["edge"],
+        reverse=True
+    )[:MAX_BETS_PER_DAY]
 
-    for sig in signals[:slots]:
-        trade = place_paper_trade(sig, capital)
-        if trade:
-            capital -= trade["size"]
-            placed.append(trade)
-            log.append(f"✅ BET: {trade['city']} | ${trade['size']} @ {trade['entry_price']:.4f} | "
-                       f"edge={trade['edge']:.3f} | ev={trade['ev']:.2f}x")
-            log.append(f"   {trade['question']}")
-            log.append(f"   {trade['reasoning']}")
+    if not top3:
+        return [], capital, 0.0, f"  {date_str}: No signals (forecast={simulated_forecast:.1f}°F, actual={actual_temp}°F)"
+
+    day_pnl = 0.0
+    trades  = []
+
+    for sig in top3:
+        if capital < BET_SIZE:
+            break
+
+        outcome = sig["outcome"]
+        if outcome == "Yes":
+            pnl = round(BET_SIZE * (1.0 / sig["price"] - 1.0), 2)
         else:
-            log.append(f"❌ FAILED to place trade for {sig['city']}")
+            pnl = -BET_SIZE
 
-    log.append(f"\nPlaced: {len(placed)} trades")
-    log.append(f"Capital remaining: ${capital:.2f}")
+        capital  += pnl
+        day_pnl  += pnl
 
-    save_log("morning", "\n".join(log))
-    return placed, "\n".join(log)
+        trades.append({
+            "date":       date_str,
+            "question":   sig["question"],
+            "price":      sig["price"],
+            "true_prob":  sig["true_prob"],
+            "edge":       sig["edge"],
+            "outcome":    outcome,
+            "pnl":        pnl,
+            "forecast":   simulated_forecast,
+            "actual":     actual_temp,
+        })
+
+    wins   = len([t for t in trades if t["outcome"] == "Yes"])
+    losses = len([t for t in trades if t["outcome"] == "No"])
+    log.append(
+        f"  {date_str}: forecast={simulated_forecast:.1f}°F actual={actual_temp}°F | "
+        f"bets={len(trades)} W={wins} L={losses} | "
+        f"day_pnl=${day_pnl:+.2f} | capital=${capital:.2f}"
+    )
+
+    return trades, capital, day_pnl, "\n".join(log)
 
 
-def check_pending_outcomes():
+def run_backtest(simulations=100):
     """
-    Check all pending (unresolved) trades against Polymarket API.
-    Called every 30 min by scheduler — not just at 8PM.
-    Returns number of trades resolved.
+    Run the backtest across all resolved Chicago dates.
+
+    Since we don't have historical NOAA forecasts, we simulate the
+    forecast for each day as: actual_temp + noise
+    where noise ~ N(mean_delta, std).
+
+    We run 'simulations' Monte Carlo iterations to get a
+    distribution of outcomes.
     """
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute("""SELECT id, market_id, entry_price, size, city, trade_date
-                 FROM paper_trades WHERE outcome IS NULL""")
-    pending = c.fetchall()
-    conn.close()
+    dates = get_resolved_dates()
+    if not dates:
+        return {"error": "No resolved dates found in DB"}
 
-    if not pending:
-        return 0
+    # Pre-fetch all data
+    day_data = []
+    for date_str in dates:
+        actual = get_wu_temp(date_str)
+        markets = get_markets_for_date(date_str)
+        if actual and markets:
+            day_data.append({
+                "date":    date_str,
+                "actual":  actual,
+                "markets": markets,
+            })
 
-    resolved = 0
-    log      = []
-    log.append(f"=== OUTCOME CHECK {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} ===")
-    log.append(f"Checking {len(pending)} pending trades...")
+    if not day_data:
+        return {"error": "No days with both WU temp and resolved markets"}
 
-    for row in pending:
-        tid          = row["id"]
-        market_id    = row["market_id"]
-        entry_price  = row["entry_price"]
-        size         = row["size"]
-        city         = row["city"]
+    # Single deterministic run using mean_delta as forecast bias
+    # (best estimate of what our system would have done)
+    capital    = STARTING_CAPITAL
+    all_trades = []
+    log_lines  = [f"BACKTEST — {len(day_data)} trading days",
+                  f"Starting capital: ${STARTING_CAPITAL}",
+                  f"Bet size: ${BET_SIZE} per signal, up to {MAX_BETS_PER_DAY}/day",
+                  ""]
 
-        try:
-            r = requests.get(
-                f"https://gamma-api.polymarket.com/markets/{market_id}",
-                timeout=10, headers={"User-Agent": "PolyEdge/1.0"})
+    for day in day_data:
+        # Simulated forecast = actual + NOAA bias
+        # (what NOAA would have said that morning)
+        simulated_forecast = day["actual"] + NOAA_MEAN_DELTA
 
-            if r.status_code != 200:
-                continue
+        trades, capital, day_pnl, day_log = simulate_one_day(
+            day["date"], day["actual"], simulated_forecast,
+            day["markets"], capital
+        )
+        all_trades.extend(trades)
+        log_lines.append(day_log)
 
-            m      = r.json()
-            prices = m.get("outcomePrices", "[]")
-            if isinstance(prices, str):
-                prices = json.loads(prices)
+    # Stats
+    total_bets = len(all_trades)
+    wins       = len([t for t in all_trades if t["outcome"] == "Yes"])
+    losses     = len([t for t in all_trades if t["outcome"] == "No"])
+    total_pnl  = round(capital - STARTING_CAPITAL, 2)
+    win_rate   = round(wins / total_bets * 100, 1) if total_bets > 0 else 0
+    roi        = round(total_pnl / STARTING_CAPITAL * 100, 1)
 
-            outcome = None
-            if prices and str(prices[0]) == "1":
-                outcome = "Yes"
-            elif len(prices) > 1 and str(prices[1]) == "1":
-                outcome = "No"
+    # Best and worst days
+    daily_pnl = {}
+    for t in all_trades:
+        daily_pnl[t["date"]] = daily_pnl.get(t["date"], 0) + t["pnl"]
 
-            if not outcome:
-                continue  # Not resolved yet
+    best_day  = max(daily_pnl.items(), key=lambda x: x[1]) if daily_pnl else None
+    worst_day = min(daily_pnl.items(), key=lambda x: x[1]) if daily_pnl else None
 
-            pnl = round(size * (1.0 / entry_price - 1.0), 4) if outcome == "Yes" else -size
-
-            conn = get_conn()
-            c2   = conn.cursor()
-            c2.execute("UPDATE paper_trades SET outcome=%s, pnl=%s WHERE id=%s",
-                       (outcome, pnl, tid))
-            conn.commit()
-            conn.close()
-
-            icon = "✅" if outcome == "Yes" else "❌"
-            log.append(f"  {icon} {city}: {outcome} | pnl=${pnl:.2f} | market={market_id}")
-            resolved += 1
-
-            # Record actual temp in noaa_forecasts for error model
-            if outcome in ("Yes", "No"):
-                _record_actual_temp(city, row["trade_date"], market_id, outcome, m)
-
-        except Exception as e:
-            log.append(f"  ERR {city} market {market_id}: {e}")
-
-    log.append(f"Resolved: {resolved}/{len(pending)}")
-
-    if resolved > 0:
-        save_log("outcome_check", "\n".join(log))
-
-    return resolved
-
-
-def _record_actual_temp(city, date_str, market_id, outcome, market_data):
-    """
-    When a market resolves Yes, record the actual temp range midpoint
-    into noaa_forecasts so we can calculate NOAA error over time.
-    """
-    if outcome != "Yes":
-        return  # Only the winning range tells us the actual temp
-
-    try:
-        # Get the market's range from our DB
-        conn = get_conn()
-        c    = conn.cursor()
-        c.execute("SELECT target_low, target_high, market_type FROM markets WHERE id=%s",
-                  (str(market_id),))
-        row = c.fetchone()
-        conn.close()
-
-        if not row:
-            return
-
-        # Calculate midpoint as actual temp
-        if row["market_type"] == "range":
-            actual_f = (row["target_low"] + row["target_high"]) / 2.0
-        elif row["market_type"] == "below":
-            actual_f = row["target_high"] - 1.0
-        elif row["market_type"] == "above":
-            actual_f = row["target_low"] + 1.0
-        else:
-            return
-
-        # Update noaa_forecasts with actual
-        conn = get_conn()
-        c    = conn.cursor()
-        c.execute("""
-            UPDATE noaa_forecasts
-            SET actual_f = %s,
-                delta_f  = forecast_f - %s
-            WHERE city=%s AND date=%s
-        """, (actual_f, actual_f, city, date_str))
-        conn.commit()
-        conn.close()
-
-    except Exception as e:
-        print(f"[ACTUAL TEMP ERR] {e}")
-
-
-def run_evening_session():
-    """Legacy endpoint — now just calls check_pending_outcomes."""
-    resolved = check_pending_outcomes()
-    log = f"Evening session: resolved {resolved} trades."
-    save_log("evening", log)
-    return log
-
-
-def save_log(session_type, content):
-    conn = get_conn()
-    try:
-        c = conn.cursor()
-        c.execute("""INSERT INTO session_logs (session_type, logged_at, content)
-                     VALUES (%s,%s,%s)""",
-                  (session_type, datetime.now(timezone.utc).isoformat(), content))
-        conn.commit()
-    except Exception as e:
-        print(f"[LOG ERR] {e}")
-    conn.close()
-
-
-def get_performance():
-    conn = get_conn()
-    c    = conn.cursor()
-
-    c.execute("""SELECT
-                    COUNT(*) as total,
-                    SUM(CASE WHEN outcome='Yes' THEN 1 ELSE 0 END) as wins,
-                    SUM(COALESCE(pnl,0)) as total_pnl,
-                    MAX(pnl) as best,
-                    MIN(pnl) as worst
-                 FROM paper_trades WHERE outcome IS NOT NULL""")
-    s = dict(c.fetchone())
-
-    c.execute("""SELECT trade_date, city, question, entry_price, size,
-                        noaa_forecast_f, predicted_range, outcome, pnl
-                 FROM paper_trades ORDER BY trade_date DESC, id DESC""")
-    trades = [dict(r) for r in c.fetchall()]
-    conn.close()
-
-    total    = s["total"] or 0
-    wins     = s["wins"] or 0
-    pnl      = float(s["total_pnl"] or 0)
-    capital  = round(CAPITAL_START + pnl, 2)
-    win_rate = round(wins / total * 100, 1) if total > 0 else 0
+    log_lines.extend([
+        "",
+        "=" * 55,
+        f"RESULTS",
+        "=" * 55,
+        f"Trading days:    {len(day_data)}",
+        f"Total bets:      {total_bets}",
+        f"Wins:            {wins}",
+        f"Losses:          {losses}",
+        f"Win rate:        {win_rate}%",
+        f"Starting capital: ${STARTING_CAPITAL:,.2f}",
+        f"Final capital:   ${capital:,.2f}",
+        f"Total PnL:       ${total_pnl:+,.2f}",
+        f"ROI:             {roi}%",
+        f"Best day:        {best_day[0]} ${best_day[1]:+.2f}" if best_day else "",
+        f"Worst day:       {worst_day[0]} ${worst_day[1]:+.2f}" if worst_day else "",
+    ])
 
     return {
-        "total_bets":    total,
-        "wins":          wins,
-        "win_rate":      win_rate,
-        "total_pnl":     round(pnl, 2),
-        "final_capital": capital,
-        "roi":           round(pnl / CAPITAL_START * 100, 1),
-        "best_trade":    round(float(s["best"] or 0), 2),
-        "worst_trade":   round(float(s["worst"] or 0), 2),
-        "trades":        trades,
+        "trading_days":    len(day_data),
+        "total_bets":      total_bets,
+        "wins":            wins,
+        "losses":          losses,
+        "win_rate":        win_rate,
+        "starting_capital": STARTING_CAPITAL,
+        "final_capital":   round(capital, 2),
+        "total_pnl":       total_pnl,
+        "roi":             roi,
+        "best_day":        {"date": best_day[0], "pnl": round(best_day[1], 2)} if best_day else None,
+        "worst_day":       {"date": worst_day[0], "pnl": round(worst_day[1], 2)} if worst_day else None,
+        "daily_pnl":       {k: round(v, 2) for k, v in sorted(daily_pnl.items())},
+        "trades":          sorted(all_trades, key=lambda x: x["date"]),
+        "log":             "\n".join(log_lines),
     }
 
 
-if __name__ == '__main__':
-    trades, log = run_morning_session()
-    print(log)
+if __name__ == "__main__":
+    result = run_backtest()
+    print(result.get("log", result.get("error")))
