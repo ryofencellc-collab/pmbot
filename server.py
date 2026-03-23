@@ -379,6 +379,22 @@ def debug_full():
     return out
 
 
+# ── Backtest ─────────────────────────────────────────────────────────────────
+
+@app.get("/backtest")
+def run_backtest():
+    """
+    Simulate 30 days of trading against resolved Chicago markets.
+    Uses WU actual temps + our probability model to show what we would have made.
+    """
+    try:
+        from strategy.backtest import run_backtest as _run
+        result = _run()
+        return result
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ── System Test (legacy) ──────────────────────────────────────────────────────
 
 @app.get("/test")
