@@ -160,4 +160,21 @@ def run_backtest():
             trades.append(sig)
 
     win_rate = wins / total_bets if total_bets > 0 else 0
-    roi      = (capital - CONFIG["starting_capit
+    roi      = (capital - CONFIG["starting_capital"]) / CONFIG["starting_capital"] * 100
+
+    print(f"\n{'='*55}")
+    print(f"  RESULTS — CHICAGO ONLY")
+    print(f"{'='*55}")
+    print(f"  Total bets:    {total_bets}")
+    print(f"  Wins:          {wins}")
+    print(f"  Win rate:      {win_rate*100:.1f}%")
+    print(f"  Final capital: ${capital:.2f}")
+    print(f"  ROI:           {roi:.1f}%")
+    print(f"{'='*55}\n")
+
+    return {"total_bets": total_bets, "wins": wins, "win_rate": win_rate,
+            "final_capital": capital, "roi": roi}
+
+
+if __name__ == '__main__':
+    run_backtest()
