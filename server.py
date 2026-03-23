@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+import threading
 sys.path.insert(0, os.path.dirname(__file__))
 
 from fastapi import FastAPI
@@ -14,10 +15,44 @@ app = FastAPI(title="PolyEdge", version="3.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
+def run_scheduler():
+    import time
+    from datetime import datetime
+    print("[SCHEDULER] Started")
+    morning_ran = None
+    evening_ran = None
+    while True:
+        now    = datetime.now()
+        today  = now.strftime('%Y-%m-%d')
+        hour   = now.hour
+        minute = now.minute
+
+        if hour == 7 and minute < 5 and morning_ran != today:
+            try:
+                from strategy.paper_trade import run_morning_session
+                trades, log = run_morning_session()
+                morning_ran = today
+                print(f"[SCHEDULER] Morning done. {len(trades)} trades.")
+            except Exception as e:
+                print(f"[SCHEDULER] Morning error: {e}")
+
+        elif hour == 20 and minute < 5 and evening_ran != today:
+            try:
+                from strategy.paper_trade import run_evening_session
+                run_evening_session()
+                evening_ran = today
+                print("[SCHEDULER] Evening done.")
+            except Exception as e:
+                print(f"[SCHEDULER] Evening error: {e}")
+
+        time.sleep(30)
+
+
 @app.on_event("startup")
 def startup():
     init_db()
-    print("[SERVER] Ready")
+    threading.Thread(target=run_scheduler, daemon=True).start()
+    print("[SERVER] Ready — scheduler running")
 
 
 @app.get("/health")
@@ -42,7 +77,6 @@ def run_test():
     results = {}
 
     try:
-        from data.database import get_conn
         conn = get_conn()
         conn.cursor().execute("SELECT 1")
         conn.close()
@@ -59,7 +93,8 @@ def run_test():
         results["noaa"] = {"status": "error", "message": str(e)}
 
     try:
-        r = req.get("https://gamma-api.polymarket.com/markets", params={"limit": 1}, timeout=10)
+        r = req.get("https://gamma-api.polymarket.com/markets",
+                    params={"limit": 1}, timeout=10)
         results["polymarket"] = {"status": "ok", "message": "Connected"}
     except Exception as e:
         results["polymarket"] = {"status": "error", "message": str(e)}
@@ -138,7 +173,9 @@ def get_logs():
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
-    return open(os.path.join(os.path.dirname(__file__), "dashboard.html")).read()
+    html_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
+    with open(html_path) as f:
+        return f.read()
 
 
 if __name__ == "__main__":
