@@ -1,12 +1,6 @@
-"""
-server.py - FastAPI backend.
-Serves the dashboard and handles all API calls.
-"""
-
 import sys
 import os
 import json
-import threading
 sys.path.insert(0, os.path.dirname(__file__))
 
 from fastapi import FastAPI
@@ -24,23 +18,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 @app.on_event("startup")
 def startup():
     init_db()
-    # Create session_logs table if not exists
-    conn = get_conn()
-    conn.execute("""CREATE TABLE IF NOT EXISTS session_logs
-        (id INTEGER PRIMARY KEY AUTOINCREMENT,
-         session_type TEXT, logged_at TEXT, content TEXT)""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS paper_trades
-        (id INTEGER PRIMARY KEY AUTOINCREMENT,
-         trade_date TEXT, market_id TEXT, question TEXT,
-         city TEXT, entry_price REAL, noaa_forecast_f REAL,
-         predicted_range TEXT, size REAL, capital_at_entry REAL,
-         outcome TEXT, pnl REAL)""")
-    conn.commit()
-    conn.close()
     print("[SERVER] Ready")
 
-
-# ── Health & Status ───────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
@@ -50,7 +29,8 @@ def health():
     for t in ["markets", "price_snapshots", "wu_temps", "paper_trades"]:
         try:
             c.execute(f"SELECT COUNT(*) FROM {t}")
-            tables[t] = c.fetchone()[0]
+            row = c.fetchone()
+            tables[t] = row[0] if row else 0
         except Exception:
             tables[t] = 0
     conn.close()
@@ -59,28 +39,23 @@ def health():
 
 @app.get("/test")
 def run_test():
-    """Full system test."""
     import warnings
     warnings.filterwarnings('ignore')
     from scheduler import run_system_test
     return run_system_test()
 
 
-# ── Signals ───────────────────────────────────────────────────────────────────
-
 @app.get("/signals")
 def get_signals():
-    """Get today's signals."""
     from strategy.signals import scan_signals
     from datetime import datetime, timezone
-    today   = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    today        = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     signals, log = scan_signals(today)
     return {"signals": signals, "log": log, "date": today}
 
 
 @app.post("/morning")
 def morning_session():
-    """Manually trigger morning session."""
     from strategy.paper_trade import run_morning_session
     trades, log = run_morning_session()
     return {"trades": trades, "log": log}
@@ -88,13 +63,10 @@ def morning_session():
 
 @app.post("/evening")
 def evening_session():
-    """Manually trigger evening session."""
     from strategy.paper_trade import run_evening_session
     log = run_evening_session()
     return {"log": log}
 
-
-# ── Performance ───────────────────────────────────────────────────────────────
 
 @app.get("/performance")
 def get_performance():
@@ -127,8 +99,6 @@ def get_logs():
     conn.close()
     return logs
 
-
-# ── Dashboard ─────────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
@@ -201,26 +171,20 @@ def dashboard():
 </style>
 </head>
 <body>
-
 <div class="header">
   <div class="logo">POLY<span>EDGE</span></div>
   <div id="time" style="font-size:12px;color:#666"></div>
 </div>
-
 <div class="status-bar" id="statusBar">
   <div class="status-item"><div class="dot dot-gray"></div>Loading...</div>
 </div>
-
 <div class="tabs">
   <div class="tab active" onclick="showTab('signals')">Signals</div>
   <div class="tab" onclick="showTab('trades')">Trades</div>
   <div class="tab" onclick="showTab('performance')">Performance</div>
   <div class="tab" onclick="showTab('system')">System</div>
 </div>
-
 <div class="content">
-
-  <!-- SIGNALS TAB -->
   <div id="tab-signals">
     <div class="card">
       <div class="card-title">Today's Signals</div>
@@ -229,8 +193,6 @@ def dashboard():
     <button class="btn" onclick="runMorning()">▶ Run Morning Session Now</button>
     <button class="btn btn-secondary" onclick="loadSignals()">↻ Refresh Signals</button>
   </div>
-
-  <!-- TRADES TAB -->
   <div id="tab-trades" style="display:none">
     <div class="card">
       <div class="card-title">Trade Log — Every Decision Explained</div>
@@ -238,20 +200,16 @@ def dashboard():
     </div>
     <button class="btn btn-secondary" onclick="runEvening()">▶ Check Today's Outcomes</button>
   </div>
-
-  <!-- PERFORMANCE TAB -->
   <div id="tab-performance" style="display:none">
     <div class="card">
       <div class="card-title">Paper Trading Results</div>
       <div id="perfContent"><div class="empty">Loading performance...</div></div>
     </div>
   </div>
-
-  <!-- SYSTEM TAB -->
   <div id="tab-system" style="display:none">
     <div class="card">
       <div class="card-title">System Status</div>
-      <button class="btn" onclick="runTest()">🔍 Run Full System Test</button>
+      <button class="btn" onclick="runTest()">Run Full System Test</button>
       <div id="testResults"></div>
     </div>
     <div class="card">
@@ -259,18 +217,13 @@ def dashboard():
       <div id="logsContent"><div class="empty">No logs yet</div></div>
     </div>
   </div>
-
 </div>
-
 <script>
 const API = '';
-
-// Update time
 setInterval(() => {
   document.getElementById('time').textContent =
     new Date().toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit'});
 }, 1000);
-
 function showTab(name) {
   document.querySelectorAll('.tab').forEach((t,i) => {
     t.classList.toggle('active', ['signals','trades','performance','system'][i] === name);
@@ -283,15 +236,13 @@ function showTab(name) {
   if (name === 'performance') loadPerformance();
   if (name === 'system')      loadLogs();
 }
-
 async function loadStatus() {
   try {
     const r = await fetch(API + '/health');
     const d = await r.json();
-    const bar = document.getElementById('statusBar');
-    bar.innerHTML = `
+    document.getElementById('statusBar').innerHTML = `
       <div class="status-item"><div class="dot dot-green"></div>Server Online</div>
-      <div class="status-item"><div class="dot dot-green"></div>DB: ${d.tables.markets?.toLocaleString()} markets</div>
+      <div class="status-item"><div class="dot dot-green"></div>DB: ${d.tables.markets?.toLocaleString() || 0} markets</div>
       <div class="status-item"><div class="dot dot-green"></div>${d.tables.paper_trades || 0} paper trades</div>
     `;
   } catch(e) {
@@ -299,7 +250,6 @@ async function loadStatus() {
       '<div class="status-item"><div class="dot dot-red"></div>Server offline</div>';
   }
 }
-
 async function loadSignals() {
   document.getElementById('signalsContent').innerHTML = '<div class="empty">Scanning markets...</div>';
   try {
@@ -325,10 +275,9 @@ async function loadSignals() {
     `).join('');
   } catch(e) {
     document.getElementById('signalsContent').innerHTML =
-      '<div class="alert">Error loading signals: ' + e.message + '</div>';
+      '<div class="alert">Error: ' + e.message + '</div>';
   }
 }
-
 async function loadTrades() {
   try {
     const r = await fetch(API + '/trades');
@@ -341,7 +290,7 @@ async function loadTrades() {
     el.innerHTML = d.map(t => {
       const cls = t.outcome === 'Yes' ? 'win' : t.outcome === 'No' ? 'loss' : 'pending';
       const icon = t.outcome === 'Yes' ? '✅' : t.outcome === 'No' ? '❌' : '⏳';
-      const pnl  = t.pnl ? (t.pnl > 0 ? '+$'+t.pnl.toFixed(2) : '-$'+Math.abs(t.pnl).toFixed(2)) : 'Pending';
+      const pnl = t.pnl ? (t.pnl > 0 ? '+$'+t.pnl.toFixed(2) : '-$'+Math.abs(t.pnl).toFixed(2)) : 'Pending';
       return `
         <div class="trade">
           <div class="trade-header">
@@ -350,50 +299,31 @@ async function loadTrades() {
           </div>
           <div class="trade-detail">${t.question}</div>
           <div class="trade-detail">Entry: ${(t.entry_price*100).toFixed(1)}¢ | Size: $${t.size?.toFixed(2)} | Forecast: ${t.noaa_forecast_f}°F | Range: ${t.predicted_range}</div>
-        </div>
-      `;
+        </div>`;
     }).join('');
   } catch(e) {
-    document.getElementById('tradesContent').innerHTML =
-      '<div class="alert">Error: ' + e.message + '</div>';
+    document.getElementById('tradesContent').innerHTML = '<div class="alert">Error: ' + e.message + '</div>';
   }
 }
-
 async function loadPerformance() {
   try {
     const r = await fetch(API + '/performance');
     const d = await r.json();
     const el = document.getElementById('perfContent');
-    const roi_class = d.total_pnl >= 0 ? 'positive' : '';
     el.innerHTML = `
       <div style="text-align:center;padding:20px 0">
-        <div class="equity ${roi_class}">$${d.final_capital?.toFixed(2) || '100.00'}</div>
+        <div class="equity positive">$${d.final_capital?.toFixed(2) || '100.00'}</div>
         <div style="color:#666;font-size:12px;margin-top:4px">Starting from $100.00</div>
       </div>
       <div class="stats">
-        <div class="stat">
-          <div class="stat-val">${d.win_rate || 0}%</div>
-          <div class="stat-label">Win Rate</div>
-        </div>
-        <div class="stat">
-          <div class="stat-val">${d.total_bets || 0}</div>
-          <div class="stat-label">Total Bets</div>
-        </div>
-        <div class="stat">
-          <div class="stat-val">${d.roi || 0}%</div>
-          <div class="stat-label">ROI</div>
-        </div>
-      </div>
-      <div style="margin-top:16px;font-size:12px;color:#666;text-align:center">
-        Best trade: $${d.best_trade || 0} | Worst: $${d.worst_trade || 0}
-      </div>
-    `;
+        <div class="stat"><div class="stat-val">${d.win_rate || 0}%</div><div class="stat-label">Win Rate</div></div>
+        <div class="stat"><div class="stat-val">${d.total_bets || 0}</div><div class="stat-label">Total Bets</div></div>
+        <div class="stat"><div class="stat-val">${d.roi || 0}%</div><div class="stat-label">ROI</div></div>
+      </div>`;
   } catch(e) {
-    document.getElementById('perfContent').innerHTML =
-      '<div class="alert">Error: ' + e.message + '</div>';
+    document.getElementById('perfContent').innerHTML = '<div class="alert">Error: ' + e.message + '</div>';
   }
 }
-
 async function runTest() {
   document.getElementById('testResults').innerHTML = '<div class="empty">Running tests...</div>';
   try {
@@ -403,14 +333,11 @@ async function runTest() {
       <div class="test-result ${v.status === 'ok' ? 'test-ok' : 'test-err'}">
         <span>${v.status === 'ok' ? '✅' : '❌'} ${k}</span>
         <span style="color:#666;font-size:12px">${v.message}</span>
-      </div>
-    `).join('');
+      </div>`).join('');
   } catch(e) {
-    document.getElementById('testResults').innerHTML =
-      '<div class="alert">Test failed: ' + e.message + '</div>';
+    document.getElementById('testResults').innerHTML = '<div class="alert">Test failed: ' + e.message + '</div>';
   }
 }
-
 async function loadLogs() {
   try {
     const r = await fetch(API + '/logs');
@@ -421,45 +348,32 @@ async function loadLogs() {
       <div style="margin-bottom:12px">
         <div style="font-size:11px;color:#666;margin-bottom:4px">${l.session_type} — ${l.logged_at}</div>
         <div class="log-box">${l.content}</div>
-      </div>
-    `).join('');
+      </div>`).join('');
   } catch(e) {}
 }
-
 async function runMorning() {
-  const btn = event.target;
-  btn.textContent = 'Running...';
-  btn.disabled = true;
+  event.target.textContent = 'Running...';
+  event.target.disabled = true;
   try {
     const r = await fetch(API + '/morning', {method:'POST'});
     const d = await r.json();
     alert('Morning session complete. ' + (d.trades?.length || 0) + ' trades placed.');
-    loadSignals();
-    loadStatus();
-  } catch(e) {
-    alert('Error: ' + e.message);
-  }
-  btn.textContent = '▶ Run Morning Session Now';
-  btn.disabled = false;
+    loadSignals(); loadStatus();
+  } catch(e) { alert('Error: ' + e.message); }
+  event.target.textContent = '▶ Run Morning Session Now';
+  event.target.disabled = false;
 }
-
 async function runEvening() {
-  const btn = event.target;
-  btn.textContent = 'Checking...';
-  btn.disabled = true;
+  event.target.textContent = 'Checking...';
+  event.target.disabled = true;
   try {
-    const r = await fetch(API + '/evening', {method:'POST'});
-    alert('Evening session complete. Outcomes recorded.');
-    loadTrades();
-    loadStatus();
-  } catch(e) {
-    alert('Error: ' + e.message);
-  }
-  btn.textContent = '▶ Check Today\'s Outcomes';
-  btn.disabled = false;
+    await fetch(API + '/evening', {method:'POST'});
+    alert('Evening session complete.');
+    loadTrades(); loadStatus();
+  } catch(e) { alert('Error: ' + e.message); }
+  event.target.textContent = '▶ Check Today\'s Outcomes';
+  event.target.disabled = false;
 }
-
-// Init
 loadStatus();
 loadSignals();
 setInterval(loadStatus, 30000);
