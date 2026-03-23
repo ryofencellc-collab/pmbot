@@ -1,5 +1,5 @@
 """
-backtest.py - Chicago only backtest using real entry prices.
+backtest.py - Full backtest across all cities using real entry prices.
 Uses price from 12 hours before resolution as entry price.
 Uses WU temp as the resolution source.
 No lookahead. Pure data.
@@ -9,21 +9,30 @@ from datetime import datetime, timedelta, timezone
 from data.database import get_conn, init_db
 
 CONFIG = {
-    "starting_capital": 100.0,
-    "max_bets_per_day": 3,
+    "starting_capital":  100.0,
+    "max_bets_per_day":  3,
     "entry_hours_before": 12,
-    "min_entry_price": 0.05,
-    "max_entry_price": 0.45,
-    "bet_size_pct": 0.10,
-    "min_bet": 1.00,
-    "max_bet": 50.00,
+    "min_entry_price":   0.05,
+    "max_entry_price":   0.45,
+    "bet_size_pct":      0.10,
+    "min_bet":           1.00,
+    "max_bet":           50.00,
 }
 
-CITY = "Chicago"
+CITIES = [
+    "Chicago",
+    "Dallas",
+    "Atlanta",
+    "Miami",
+    "New York City",
+    "Seattle",
+    "Boston",
+    "Los Angeles",
+    "San Francisco",
+]
 
 
 def get_entry_price(market_id, resolved_at, hours_before=12):
-    """Get price N hours before resolution. No lookahead."""
     target_ts = resolved_at - (hours_before * 3600)
     conn = get_conn()
     c    = conn.cursor()
@@ -46,7 +55,6 @@ def get_wu_temp(city, date_str):
 
 
 def temp_matches_range(wu_temp, target_low, target_high, market_type):
-    """Check if WU temp falls in the market's range."""
     if market_type == "range":
         return target_low <= wu_temp <= target_high
     elif market_type == "above":
@@ -65,18 +73,17 @@ def run_backtest():
     conn.execute("DELETE FROM backtest_trades")
     conn.commit()
 
-    # Get all Chicago markets with outcomes
     c = conn.cursor()
     c.execute("""SELECT id, question, city, target_low, target_high,
                         market_type, unit, resolved_at, outcome
                  FROM markets
-                 WHERE city=? AND outcome IS NOT NULL
-                 ORDER BY resolved_at ASC""", (CITY,))
+                 WHERE outcome IS NOT NULL
+                 ORDER BY resolved_at ASC""")
     markets = [dict(r) for r in c.fetchall()]
     conn.close()
 
     print(f"\n{'='*55}")
-    print(f"  CHICAGO BACKTEST — {len(markets)} markets")
+    print(f"  ALL CITIES BACKTEST — {len(markets)} markets")
     print(f"  Entry: {CONFIG['entry_hours_before']}h before resolution")
     print(f"  Starting capital: ${CONFIG['starting_capital']}")
     print(f"{'='*55}\n")
@@ -84,7 +91,6 @@ def run_backtest():
     capital    = CONFIG["starting_capital"]
     total_bets = 0
     wins       = 0
-    trades     = []
 
     # Group by resolution date
     dates = {}
@@ -95,29 +101,27 @@ def run_backtest():
         dates[date_str].append(m)
 
     for date_str, day_markets in sorted(dates.items()):
-        wu_temp = get_wu_temp(CITY, date_str)
-        if not wu_temp:
-            continue
-
         day_signals = []
 
         for m in day_markets:
-            # Only bet on the range that matches WU temp
+            wu_temp = get_wu_temp(m["city"], date_str)
+            if not wu_temp:
+                continue
+
             if not temp_matches_range(wu_temp, m["target_low"], m["target_high"], m["market_type"]):
                 continue
 
-            # Get entry price 12h before resolution
             entry_price = get_entry_price(m["id"], m["resolved_at"], CONFIG["entry_hours_before"])
             if not entry_price:
                 continue
 
-            # Filter by price range
             if entry_price < CONFIG["min_entry_price"] or entry_price > CONFIG["max_entry_price"]:
                 continue
 
             day_signals.append({
                 "market_id":   m["id"],
                 "question":    m["question"],
+                "city":        m["city"],
                 "entry_price": entry_price,
                 "outcome":     m["outcome"],
                 "wu_temp":     wu_temp,
@@ -125,7 +129,7 @@ def run_backtest():
                 "target_high": m["target_high"],
             })
 
-        # Take top signals by lowest price (most mispriced)
+        # Sort by lowest price first (most mispriced)
         day_signals.sort(key=lambda x: x["entry_price"])
         top = day_signals[:CONFIG["max_bets_per_day"]]
 
@@ -149,21 +153,20 @@ def run_backtest():
                  noaa_forecast_f, wu_actual_f, predicted_range,
                  size, capital_at_entry, outcome, pnl)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (date_str, sig["market_id"], sig["question"], CITY,
-                 sig["entry_price"], wu_temp, wu_temp,
+                (date_str, sig["market_id"], sig["question"], sig["city"],
+                 sig["entry_price"], sig["wu_temp"], sig["wu_temp"],
                  f"{sig['target_low']}-{sig['target_high']}F",
                  size, round(capital - pnl, 2), outcome, round(pnl, 4)))
             conn.commit()
             conn.close()
 
-            print(f"  {date_str} | WU={wu_temp}F | entry={sig['entry_price']} | {outcome} | pnl=${pnl:.2f} | capital=${capital:.2f}")
-            trades.append(sig)
+            print(f"  {date_str} | {sig['city']:<15} | WU={sig['wu_temp']}F | entry={sig['entry_price']} | {outcome} | pnl=${pnl:.2f} | capital=${capital:.2f}")
 
     win_rate = wins / total_bets if total_bets > 0 else 0
     roi      = (capital - CONFIG["starting_capital"]) / CONFIG["starting_capital"] * 100
 
     print(f"\n{'='*55}")
-    print(f"  RESULTS — CHICAGO ONLY")
+    print(f"  FINAL RESULTS — ALL CITIES")
     print(f"{'='*55}")
     print(f"  Total bets:    {total_bets}")
     print(f"  Wins:          {wins}")
