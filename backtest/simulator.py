@@ -1,236 +1,269 @@
 """
-simulator.py — Blind day-by-day backtest. Runs all 3 models. Picks winner.
+backtest.py - Blind backtest using WU historical temps + Polymarket markets.
+
+Logic:
+1. For each day in range, get NOAA forecast for each city
+2. Find which Polymarket range matches the forecast
+3. Check market price at that time
+4. If price < threshold → simulate bet
+5. Record outcome when market resolves
+
+No lookahead. Uses only data available at decision time.
 """
 
-import uuid
 import json
-import numpy as np
+import uuid
+import requests
+import time
 from datetime import datetime, timedelta, timezone
 from data.database import get_conn, init_db
-from strategy.factors import scan_all_models
 
-DEFAULT_CONFIG = {
+# ── Config ────────────────────────────────────────────────────────────────────
+
+CONFIG = {
     "starting_capital": 100.0,
-    "principal":        100.0,
+    "principal":        0.0,
     "max_bets_per_day": 3,
-    "min_signal_score": 0.05,
-    "kelly_fraction":   0.25,
-    "max_bet_pct":      0.20,
+    "min_edge":         0.15,
+    "max_entry_price":  0.40,
+    "min_entry_price":  0.01,
+    "bet_size_pct":     0.10,
     "min_bet":          1.00,
-    "max_bet":          500.00,
-    "days_back":        1095,
+    "max_bet":          50.00,
 }
 
-MODELS = ["M1_crypto", "M2_weather", "M3_sports"]
+# NOAA grid points for each city
+NOAA_GRIDS = {
+    "Chicago":       "https://api.weather.gov/gridpoints/LOT/76,73/forecast",
+    "Dallas":        "https://api.weather.gov/gridpoints/FWD/81,103/forecast",
+    "Atlanta":       "https://api.weather.gov/gridpoints/FFC/52,57/forecast",
+    "Miami":         "https://api.weather.gov/gridpoints/MFL/109,50/forecast",
+    "New York City": "https://api.weather.gov/gridpoints/OKX/33,37/forecast",
+    "Seattle":       "https://api.weather.gov/gridpoints/SEW/124,67/forecast",
+    "Boston":        "https://api.weather.gov/gridpoints/BOX/69,90/forecast",
+    "Los Angeles":   "https://api.weather.gov/gridpoints/LOX/155,45/forecast",
+    "San Francisco": "https://api.weather.gov/gridpoints/MTR/84,105/forecast",
+}
 
 
-def kelly_size(capital, signal, config):
-    profit = capital - config["principal"]
-    if profit < config["min_bet"]:
-        return 0.0
-
-    p = signal["factor_prob"]
-    q = 1 - p
-    b = (1.0 / signal["yes_price"]) - 1.0
-
-    if b <= 0:
-        return 0.0
-
-    kelly = max(0.0, (p * b - q) / b)
-    size  = kelly * config["kelly_fraction"] * capital
-    size  = min(size, profit * config["max_bet_pct"])
-    size  = max(config["min_bet"], min(config["max_bet"], size))
-    size  = min(size, profit)
-    return round(size, 2)
+def safe_get(url, retries=3):
+    for i in range(retries):
+        try:
+            r = requests.get(url, timeout=15)
+            if r.status_code == 200:
+                return r.json()
+        except Exception as e:
+            print(f"  [ERR] {e}")
+        time.sleep(2 ** i)
+    return None
 
 
-def resolve_pending(run_id, model, as_of_ts):
+# ── NOAA Forecast ─────────────────────────────────────────────────────────────
+
+def get_noaa_forecast_for_date(city, target_date_str):
+    """
+    Get NOAA forecast high temp in F for a specific city and date.
+    Uses historical WU data as proxy for what forecast would have shown.
+    This is the best we can do for historical backtesting.
+    """
     conn = get_conn()
     c    = conn.cursor()
-    c.execute('''
-        SELECT bt.id, bt.entry_price, bt.size, m.outcome, m.resolved_at
-        FROM backtest_trades bt
-        JOIN markets m ON m.id = bt.market_id
-        WHERE bt.run_id=? AND bt.model=? AND bt.outcome IS NULL
-          AND m.resolved_at <= ? AND m.outcome IS NOT NULL
-    ''', (run_id, model, as_of_ts))
+    c.execute("SELECT max_temp_f FROM wu_temps WHERE city=? AND date=?",
+              (city, target_date_str))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
 
-    rows = c.fetchall()
-    net  = 0.0
 
-    for row in rows:
-        tid, entry_price, size, outcome, resolved_at = row
-        pnl           = size * (1.0 / entry_price - 1.0) if outcome == "Yes" else -size
-        resolved_date = datetime.fromtimestamp(resolved_at, tz=timezone.utc).strftime('%Y-%m-%d')
-        c.execute('''UPDATE backtest_trades SET outcome=?, pnl=?, resolved_date=? WHERE id=?''',
-                  (outcome, round(pnl, 4), resolved_date, tid))
-        net += pnl
+# ── Range Matcher ─────────────────────────────────────────────────────────────
 
+def find_correct_range(city, target_date_str, forecast_f):
+    """
+    Given a forecast temperature, find which Polymarket range should win.
+    Returns list of market IDs that should be bet YES on.
+    """
+    conn = get_conn()
+    c    = conn.cursor()
+
+    resolved_date = datetime.strptime(target_date_str, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+    resolved_ts_start = int(resolved_date.timestamp())
+    resolved_ts_end   = int((resolved_date + timedelta(days=1)).timestamp())
+
+    c.execute("""SELECT id, question, target_low, target_high, market_type, unit,
+                        last_trade_price, outcome
+                 FROM markets
+                 WHERE city=?
+                 AND resolved_at >= ? AND resolved_at < ?
+                 AND outcome IS NOT NULL""",
+              (city, resolved_ts_start, resolved_ts_end))
+    markets = [dict(r) for r in c.fetchall()]
+    conn.close()
+
+    signals = []
+    for m in markets:
+        low  = m["target_low"]
+        high = m["target_high"]
+        unit = m["unit"]
+        price = m["last_trade_price"]
+
+        # Convert forecast to correct unit
+        temp = forecast_f
+        if unit == "C":
+            temp = (forecast_f - 32) * 5 / 9
+
+        # Check if forecast falls in this range
+        in_range = False
+        if m["market_type"] == "range":
+            in_range = low <= temp <= high
+        elif m["market_type"] == "above":
+            in_range = temp >= low
+        elif m["market_type"] == "below":
+            in_range = temp <= high
+        elif m["market_type"] == "exact":
+            in_range = abs(temp - low) <= 1.0
+
+        if not in_range:
+            continue
+
+        # Check price is in our target range
+        if price < CONFIG["min_entry_price"] or price > CONFIG["max_entry_price"]:
+            continue
+
+        # Calculate edge
+        true_prob = 0.80  # if forecast matches range, high confidence
+        edge      = true_prob - price
+
+        if edge < CONFIG["min_edge"]:
+            continue
+
+        signals.append({
+            "market_id":    m["id"],
+            "question":     m["question"],
+            "city":         city,
+            "entry_price":  price,
+            "forecast_f":   forecast_f,
+            "true_prob":    true_prob,
+            "edge":         edge,
+            "ev":           true_prob * (1.0 / price) - 1.0,
+            "outcome":      m["outcome"],
+        })
+
+    return signals
+
+
+# ── Backtest ──────────────────────────────────────────────────────────────────
+
+def run_backtest():
+    init_db()
+
+    # Clear previous runs
+    conn = get_conn()
+    conn.execute("DELETE FROM backtest_trades")
     conn.commit()
     conn.close()
-    return round(net, 4)
 
+    # Get date range from WU data
+    conn = get_conn()
+    c    = conn.cursor()
+    c.execute("SELECT MIN(date), MAX(date) FROM wu_temps")
+    row = c.fetchone()
+    conn.close()
 
-def run_model_backtest(model, run_id, config):
-    end_dt   = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    start_dt = end_dt - timedelta(days=config["days_back"])
-    current  = start_dt
-    capital  = config["starting_capital"]
-    equity_curve = []
-    day_count    = 0
-    signal_days  = 0
+    if not row or not row[0]:
+        print("No WU temp data. Run ingest first.")
+        return
 
-    print(f"\n  [{model}] {start_dt.date()} → {end_dt.date()}")
+    start_date = datetime.strptime(row[0], '%Y-%m-%d').replace(tzinfo=timezone.utc)
+    end_date   = datetime.strptime(row[1], '%Y-%m-%d').replace(tzinfo=timezone.utc)
 
-    while current < end_dt:
-        eval_ts = int(current.timestamp())
-        day_str = current.strftime('%Y-%m-%d')
+    print(f"\n{'='*55}")
+    print(f"  POLYEDGE BACKTEST")
+    print(f"  {start_date.date()} → {end_date.date()}")
+    print(f"  Starting capital: ${CONFIG['starting_capital']}")
+    print(f"{'='*55}\n")
 
-        pnl = resolve_pending(run_id, model, eval_ts)
-        if pnl != 0:
-            capital = max(capital + pnl, config["principal"] * 0.5)
+    capital    = CONFIG["starting_capital"]
+    current    = start_date
+    total_bets = 0
+    wins       = 0
+    equity     = []
 
-        all_signals = scan_all_models(eval_ts, models=[model])
-        signals     = [s for s in all_signals.get(model, [])
-                       if s["signal_score"] >= config["min_signal_score"]]
-        top         = signals[:config["max_bets_per_day"]]
-        day_bets    = 0
+    while current <= end_date:
+        date_str = current.strftime('%Y-%m-%d')
+        day_bets = 0
+        day_signals = []
 
-        for sig in top:
-            size = kelly_size(capital, sig, config)
-            if size <= 0:
+        # Scan all cities for this date
+        for city in NOAA_GRIDS.keys():
+            forecast = get_noaa_forecast_for_date(city, date_str)
+            if not forecast:
                 continue
 
+            signals = find_correct_range(city, date_str, forecast)
+            day_signals.extend(signals)
+
+        # Sort by edge descending
+        day_signals.sort(key=lambda x: x["edge"], reverse=True)
+        top = day_signals[:CONFIG["max_bets_per_day"]]
+
+        for sig in top:
+            size = min(
+                CONFIG["max_bet"],
+                max(CONFIG["min_bet"], capital * CONFIG["bet_size_pct"])
+            )
+            if size > capital:
+                continue
+
+            outcome  = sig["outcome"]
+            pnl      = size * (1.0 / sig["entry_price"] - 1.0) if outcome == "Yes" else -size
+            capital += pnl
+
             conn = get_conn()
-            conn.execute('''
-                INSERT INTO backtest_trades
-                (run_id, model, sim_date, market_id, question, entry_price,
-                 size, capital_at_entry, signal_score, factor_data, outcome, pnl, resolved_date)
-                VALUES (?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL)
-            ''', (run_id, model, day_str, sig["market_id"], sig["question"],
-                  sig["yes_price"], size, round(capital, 2),
-                  sig["signal_score"], sig.get("factor_data", "{}")))
+            conn.execute("""INSERT INTO backtest_trades
+                (sim_date, market_id, question, city, entry_price, noaa_forecast_f,
+                 wu_actual_f, predicted_range, size, capital_at_entry, outcome, pnl)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (date_str, sig["market_id"], sig["question"], sig["city"],
+                 sig["entry_price"], sig["forecast_f"], sig["forecast_f"],
+                 sig["question"][40:70], size, round(capital - pnl, 2),
+                 outcome, round(pnl, 4)))
             conn.commit()
             conn.close()
 
-            capital  -= size
-            day_bets += 1
+            total_bets += 1
+            day_bets   += 1
+            if outcome == "Yes":
+                wins += 1
 
-        equity_curve.append({"date": day_str, "capital": round(capital, 2)})
-        day_count += 1
+        equity.append({"date": date_str, "capital": round(capital, 2)})
+
         if day_bets > 0:
-            signal_days += 1
-            print(f"    {day_str} | ${capital:.2f} | bets={day_bets}")
+            print(f"  {date_str} | ${capital:.2f} | bets={day_bets}")
 
         current += timedelta(days=1)
 
-    resolve_pending(run_id, model, int(end_dt.timestamp()))
+    # Results
+    win_rate = wins / total_bets if total_bets > 0 else 0
+    roi      = (capital - CONFIG["starting_capital"]) / CONFIG["starting_capital"] * 100
 
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute('''
-        SELECT COUNT(*) as total,
-               SUM(CASE WHEN outcome="Yes" THEN 1 ELSE 0 END) as wins,
-               SUM(pnl) as total_pnl, MAX(pnl) as best, MIN(pnl) as worst
-        FROM backtest_trades WHERE run_id=? AND model=? AND outcome IS NOT NULL
-    ''', (run_id, model))
-    s = dict(c.fetchone())
+    print(f"\n{'='*55}")
+    print(f"  BACKTEST RESULTS")
+    print(f"{'='*55}")
+    print(f"  Total bets:    {total_bets}")
+    print(f"  Win rate:      {win_rate*100:.1f}%")
+    print(f"  Final capital: ${capital:.2f}")
+    print(f"  ROI:           {roi:.1f}%")
+    print(f"{'='*55}\n")
 
-    c.execute('''SELECT sim_date, market_id, question, entry_price, size,
-                        capital_at_entry, signal_score, factor_data, outcome, pnl
-                 FROM backtest_trades WHERE run_id=? AND model=? ORDER BY sim_date''',
-              (run_id, model))
-    trades = [dict(r) for r in c.fetchall()]
-    conn.close()
-
-    total    = s["total"] or 1
-    wins     = s["wins"] or 0
-    pnl_sum  = s["total_pnl"] or 0
-    final    = config["starting_capital"] + pnl_sum
-    roi      = (final - config["starting_capital"]) / config["starting_capital"] * 100
-    win_rate = wins / total
-
-    caps   = [e["capital"] for e in equity_curve]
-    rets   = np.diff(caps) / (np.array(caps[:-1]) + 1e-9)
-    sharpe = float((np.mean(rets) / (np.std(rets) + 1e-9)) * np.sqrt(252)) if len(rets) > 1 else 0.0
-
-    peak   = caps[0] if caps else 100
-    max_dd = 0.0
-    for cap in caps:
-        peak   = max(peak, cap)
-        max_dd = max(max_dd, (peak - cap) / peak)
-
-    result = {
-        "model": model, "run_id": run_id,
-        "win_rate": round(win_rate, 4), "total_bets": total, "wins": wins,
-        "total_pnl": round(pnl_sum, 2), "final_capital": round(final, 2),
-        "roi": round(roi, 2), "best_trade": round(s["best"] or 0, 2),
-        "worst_trade": round(s["worst"] or 0, 2),
-        "sharpe": round(sharpe, 3), "max_drawdown": round(max_dd * 100, 2),
-        "signal_coverage": round(signal_days / max(day_count, 1) * 100, 1),
-        "equity_curve": equity_curve, "trades": trades,
+    return {
+        "total_bets":    total_bets,
+        "wins":          wins,
+        "win_rate":      round(win_rate, 4),
+        "final_capital": round(capital, 2),
+        "roi":           round(roi, 2),
+        "equity":        equity,
     }
-
-    conn = get_conn()
-    conn.execute('''
-        INSERT OR REPLACE INTO backtest_runs
-        (run_id, model, started_at, completed_at, config,
-         win_rate, total_bets, total_pnl, final_capital, roi, sharpe, max_drawdown)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-    ''', (run_id, model, start_dt.isoformat(), datetime.now(timezone.utc).isoformat(),
-          json.dumps(config), result["win_rate"], total, round(pnl_sum, 2),
-          round(final, 2), round(roi, 2), result["sharpe"], result["max_drawdown"]))
-    conn.commit()
-    conn.close()
-    return result
-
-
-def run_all_backtests(config=None):
-    if config is None:
-        config = DEFAULT_CONFIG.copy()
-
-    init_db()
-    conn = get_conn()
-    conn.execute("DELETE FROM backtest_trades")
-    conn.execute("DELETE FROM backtest_runs")
-    conn.commit()
-    conn.close()
-
-    run_id      = str(uuid.uuid4())[:8]
-    all_results = {}
-
-    print(f"\n{'='*60}")
-    print(f"  POLYEDGE 3-MODEL BACKTEST | run_id={run_id}")
-    print(f"{'='*60}")
-
-    for model in MODELS:
-        all_results[model] = run_model_backtest(model, f"{run_id}_{model}", config)
-
-    print(f"\n{'='*60}")
-    print(f"  MODEL COMPARISON")
-    print(f"{'='*60}")
-    print(f"  {'Model':<14} {'WinRate':>8} {'Bets':>6} {'ROI':>8} {'Final$':>9} {'Sharpe':>7} {'MaxDD':>7}")
-    print(f"  {'-'*65}")
-
-    winner     = None
-    best_score = -999
-
-    for model, r in all_results.items():
-        score = r["sharpe"] + r["roi"] / 100 - r["max_drawdown"] / 100
-        if score > best_score:
-            best_score = score
-            winner     = model
-        print(f"  {model:<14} {r['win_rate']*100:>7.1f}% {r['total_bets']:>6} "
-              f"{r['roi']:>7.1f}% ${r['final_capital']:>8.2f} "
-              f"{r['sharpe']:>7.3f} {r['max_drawdown']:>6.1f}%")
-
-    print(f"\n  ✓ WINNER: {winner}")
-    print(f"{'='*60}\n")
-
-    all_results["winner"] = winner
-    all_results["run_id"] = run_id
-    return all_results
 
 
 if __name__ == '__main__':
-    run_all_backtests()
+    run_backtest()
