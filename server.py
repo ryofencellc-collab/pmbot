@@ -422,6 +422,121 @@ def run_backtest():
         return {"error": str(e)}
 
 
+# ── NOAA History Test ────────────────────────────────────────────────────────
+
+@app.get("/debug/noaa-history")
+def debug_noaa_history():
+    """
+    Test Iowa State Mesonet API for historical NOAA forecasts.
+    KLOT = Chicago NWS office.
+    If this works we can build a real error model from 30 days of real forecasts.
+    """
+    import requests as req
+    from datetime import date, timedelta
+
+    results = {}
+
+    # Test 1: Iowa State Mesonet - NWS forecast archive
+    try:
+        r = req.get(
+            "https://mesonet.agron.iastate.edu/api/1/nwstext.json",
+            params={"station": "KLOT", "has_iemid": 0, "fmt": "json"},
+            timeout=15, headers={"User-Agent": "PolyEdge/1.0"})
+        results["mesonet_nwstext"] = {
+            "status": r.status_code,
+            "sample": str(r.text[:300]) if r.status_code == 200 else r.text[:200]
+        }
+    except Exception as e:
+        results["mesonet_nwstext"] = {"status": "ERROR", "error": str(e)}
+
+    # Test 2: Iowa State - AFD (Area Forecast Discussion) archive
+    try:
+        yesterday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+        r = req.get(
+            f"https://mesonet.agron.iastate.edu/api/1/nwstext.json",
+            params={"station": "KLOT", "fmt": "json",
+                    "sdate": yesterday, "edate": yesterday},
+            timeout=15, headers={"User-Agent": "PolyEdge/1.0"})
+        results["mesonet_yesterday"] = {
+            "status": r.status_code,
+            "sample": str(r.text[:300]) if r.status_code == 200 else r.text[:200]
+        }
+    except Exception as e:
+        results["mesonet_yesterday"] = {"status": "ERROR", "error": str(e)}
+
+    # Test 3: NOAA climate data API - daily summaries (actual observed)
+    try:
+        r = req.get(
+            "https://www.ncdc.noaa.gov/cdo-web/api/v2/data",
+            params={
+                "datasetid": "GHCND",
+                "stationid": "GHCND:USW00094846",  # O'Hare
+                "startdate": "2026-02-21",
+                "enddate": "2026-02-21",
+                "datatypeid": "TMAX",
+                "units": "standard",
+                "limit": 5,
+            },
+            headers={"token": "YOUR_NCDC_TOKEN"},
+            timeout=15)
+        results["ncdc_climate"] = {
+            "status": r.status_code,
+            "note": "Needs free API token from ncdc.noaa.gov",
+            "sample": str(r.text[:200])
+        }
+    except Exception as e:
+        results["ncdc_climate"] = {"status": "ERROR", "error": str(e)}
+
+    # Test 4: Open-Meteo - free historical weather API, no auth needed
+    try:
+        r = req.get(
+            "https://archive-api.open-meteo.com/v1/archive",
+            params={
+                "latitude": 41.9742,   # O'Hare coordinates
+                "longitude": -87.9073,
+                "start_date": "2026-02-21",
+                "end_date": "2026-03-22",
+                "daily": "temperature_2m_max",
+                "temperature_unit": "fahrenheit",
+                "timezone": "America/Chicago",
+            },
+            timeout=15, headers={"User-Agent": "PolyEdge/1.0"})
+        data = r.json() if r.status_code == 200 else {}
+        results["open_meteo_history"] = {
+            "status": r.status_code,
+            "days": len(data.get("daily", {}).get("time", [])),
+            "sample_dates": data.get("daily", {}).get("time", [])[:3],
+            "sample_temps": data.get("daily", {}).get("temperature_2m_max", [])[:3],
+        }
+    except Exception as e:
+        results["open_meteo_history"] = {"status": "ERROR", "error": str(e)}
+
+    # Test 5: Open-Meteo forecast API - free, no auth
+    try:
+        r = req.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": 41.9742,
+                "longitude": -87.9073,
+                "daily": "temperature_2m_max",
+                "temperature_unit": "fahrenheit",
+                "timezone": "America/Chicago",
+                "forecast_days": 7,
+            },
+            timeout=15, headers={"User-Agent": "PolyEdge/1.0"})
+        data = r.json() if r.status_code == 200 else {}
+        results["open_meteo_forecast"] = {
+            "status": r.status_code,
+            "days": len(data.get("daily", {}).get("time", [])),
+            "dates": data.get("daily", {}).get("time", []),
+            "temps": data.get("daily", {}).get("temperature_2m_max", []),
+        }
+    except Exception as e:
+        results["open_meteo_forecast"] = {"status": "ERROR", "error": str(e)}
+
+    return results
+
+
 # ── System Test (legacy) ──────────────────────────────────────────────────────
 
 @app.get("/test")
