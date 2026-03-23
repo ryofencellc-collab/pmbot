@@ -23,38 +23,54 @@ ingest_status = {"running": False, "done": False, "result": None}
 def run_scheduler():
     """
     Runs forever in background thread.
-    - 7:00 AM: ingest + morning session
+    - 7:00 AM UTC: ingest + morning session
     - Every 30 min: check pending outcomes (real-time resolution)
-    - 8:00 PM: evening session log
+    - 8:00 PM UTC: evening session log
+
+    Uses DB session_logs to track whether morning already ran today
+    so restarts don't cause missed or duplicate sessions.
     """
-    from datetime import datetime
+    from datetime import datetime, timezone
     print("[SCHEDULER] Started")
 
-    morning_ran  = None
-    evening_ran  = None
     last_outcome = None
 
     while True:
-        now    = datetime.now()
+        now    = datetime.now(timezone.utc)
         today  = now.strftime('%Y-%m-%d')
         hour   = now.hour
         minute = now.minute
 
-        # Morning: 7:00–7:05 AM — ingest then trade
-        if hour == 7 and minute < 5 and morning_ran != today:
-            print("[SCHEDULER] Morning session starting...")
+        # Morning: 7:00–7:05 AM UTC — ingest then trade
+        if hour == 7 and minute < 5:
+            # Check DB to see if morning already ran today (survives restarts)
             try:
-                from data.ingest import run_full_ingest
-                run_full_ingest(days_back=30, days_ahead=7)
-            except Exception as e:
-                print(f"[SCHEDULER] Ingest error: {e}")
-            try:
-                from strategy.paper_trade import run_morning_session
-                trades, log = run_morning_session()
-                morning_ran = today
-                print(f"[SCHEDULER] Morning done. {len(trades)} trades placed.")
-            except Exception as e:
-                print(f"[SCHEDULER] Morning error: {e}")
+                conn = get_conn()
+                c    = conn.cursor()
+                c.execute("""SELECT COUNT(*) as count FROM session_logs
+                             WHERE session_type='morning'
+                             AND logged_at LIKE %s""", (f"{today}%",))
+                already_ran = c.fetchone()["count"] > 0
+                conn.close()
+            except Exception:
+                already_ran = False
+
+            if not already_ran:
+                print("[SCHEDULER] Morning session starting...")
+                # Run ingest first, wait for it to complete
+                try:
+                    from data.ingest import run_full_ingest
+                    run_full_ingest(days_back=30, days_ahead=7)
+                    print("[SCHEDULER] Ingest complete")
+                except Exception as e:
+                    print(f"[SCHEDULER] Ingest error: {e}")
+                # Then run morning session
+                try:
+                    from strategy.paper_trade import run_morning_session
+                    trades, log = run_morning_session()
+                    print(f"[SCHEDULER] Morning done. {len(trades)} trades placed.")
+                except Exception as e:
+                    print(f"[SCHEDULER] Morning error: {e}")
 
         # Every 30 min: check outcomes in real time
         check_key = f"{today}-{hour}-{minute // 30}"
@@ -68,15 +84,26 @@ def run_scheduler():
             except Exception as e:
                 print(f"[SCHEDULER] Outcome check error: {e}")
 
-        # Evening: 8:00–8:05 PM — log summary
-        if hour == 20 and minute < 5 and evening_ran != today:
+        # Evening: 8:00–8:05 PM UTC — log summary
+        if hour == 20 and minute < 5:
             try:
-                from strategy.paper_trade import run_evening_session
-                run_evening_session()
-                evening_ran = today
-                print("[SCHEDULER] Evening done.")
-            except Exception as e:
-                print(f"[SCHEDULER] Evening error: {e}")
+                conn = get_conn()
+                c    = conn.cursor()
+                c.execute("""SELECT COUNT(*) as count FROM session_logs
+                             WHERE session_type='evening'
+                             AND logged_at LIKE %s""", (f"{today}%",))
+                already_ran = c.fetchone()["count"] > 0
+                conn.close()
+            except Exception:
+                already_ran = False
+
+            if not already_ran:
+                try:
+                    from strategy.paper_trade import run_evening_session
+                    run_evening_session()
+                    print("[SCHEDULER] Evening done.")
+                except Exception as e:
+                    print(f"[SCHEDULER] Evening error: {e}")
 
         time.sleep(30)
 
