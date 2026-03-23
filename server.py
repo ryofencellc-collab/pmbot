@@ -411,11 +411,25 @@ def debug_full():
 @app.get("/backtest")
 def run_backtest():
     """
-    Simulate 30 days of trading against resolved Chicago markets.
-    Uses WU actual temps + our probability model to show what we would have made.
+    Simulate 30 days using WU actual temps as proxy forecast.
+    Fast but uses simulated forecasts.
     """
     try:
         from strategy.backtest import run_backtest as _run
+        result = _run()
+        return result
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/backtest/real")
+def run_backtest_real():
+    """
+    Real backtest using actual GFS MOS historical forecasts from IEM.
+    Slow (5-10 min) but 100% real data — no simulation.
+    """
+    try:
+        from strategy.backtest_real import run_backtest as _run
         result = _run()
         return result
     except Exception as e:
