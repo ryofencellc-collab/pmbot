@@ -57,7 +57,7 @@ def run_ingest_background():
     ingest_status["result"] = None
     try:
         from data.ingest import run_full_ingest
-        run_full_ingest(days_back=30)   # 30 days — fast, no timeout
+        run_full_ingest(days_back=30, days_ahead=7)
         conn = get_conn()
         c = conn.cursor()
         counts = {}
@@ -141,39 +141,6 @@ def run_ingest():
 @app.get("/ingest/status")
 def ingest_status_check():
     return ingest_status
-
-
-@app.get("/ingest/test")
-def ingest_test():
-    """
-    Dry-run: fetch the first page of open markets from Polymarket and show
-    which ones our parser recognises as temperature markets.
-    Writes nothing to the database.
-    """
-    import requests as req
-    from data.ingest import parse_market
-    try:
-        r = req.get(
-            "https://gamma-api.polymarket.com/markets",
-            params={"closed": "false", "limit": 100, "offset": 0,
-                    "order": "endDate", "ascending": "true"},
-            timeout=20, headers={"User-Agent": "PolyEdge/1.0"})
-        data = r.json() if r.status_code == 200 else []
-    except Exception as e:
-        return {"error": str(e)}
-    matched, unmatched = [], []
-    for m in data:
-        q = m.get("question", "")
-        parsed = parse_market(q)
-        if parsed:
-            matched.append({"question": q, "city": parsed["city"],
-                            "type": parsed["market_type"],
-                            "low": parsed["target_low"],
-                            "high": parsed["target_high"]})
-        else:
-            unmatched.append(q[:80])
-    return {"total_fetched": len(data), "temp_matched": len(matched),
-            "matched": matched[:20], "unmatched_sample": unmatched[:10]}
 
 
 
