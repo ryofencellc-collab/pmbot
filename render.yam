@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: polyedge
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
