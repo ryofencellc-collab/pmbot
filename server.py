@@ -14,6 +14,8 @@ from data.database import get_conn, init_db
 app = FastAPI(title="PolyEdge", version="3.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+ingest_status = {"running": False, "done": False, "result": None}
+
 
 def run_scheduler():
     import time
@@ -48,6 +50,31 @@ def run_scheduler():
         time.sleep(30)
 
 
+def run_ingest_background():
+    global ingest_status
+    ingest_status["running"] = True
+    ingest_status["done"] = False
+    ingest_status["result"] = None
+    try:
+        from data.ingest import run_full_ingest
+        run_full_ingest(days_back=120)
+        conn = get_conn()
+        c = conn.cursor()
+        counts = {}
+        for t in ["markets", "wu_temps", "paper_trades", "session_logs"]:
+            c.execute(f"SELECT COUNT(*) FROM {t}")
+            counts[t] = c.fetchone()[0]
+        conn.close()
+        ingest_status["result"] = counts
+        print(f"[INGEST] Done: {counts}")
+    except Exception as e:
+        ingest_status["result"] = {"error": str(e)}
+        print(f"[INGEST] Error: {e}")
+    finally:
+        ingest_status["running"] = False
+        ingest_status["done"] = True
+
+
 @app.on_event("startup")
 def startup():
     init_db()
@@ -68,7 +95,7 @@ def health():
         except Exception:
             tables[t] = 0
     conn.close()
-    return {"status": "ok", "tables": tables}
+    return {"status": "ok", "tables": tables, "ingest": ingest_status}
 
 
 @app.get("/test")
@@ -104,19 +131,16 @@ def run_test():
 
 @app.get("/ingest")
 def run_ingest():
-    try:
-        from data.ingest import run_full_ingest
-        run_full_ingest(days_back=120)
-        conn = get_conn()
-        c = conn.cursor()
-        counts = {}
-        for t in ["markets", "wu_temps", "paper_trades", "session_logs"]:
-            c.execute(f"SELECT COUNT(*) FROM {t}")
-            counts[t] = c.fetchone()[0]
-        conn.close()
-        return {"status": "ok", "tables": counts}
-    except Exception as e:
-        return {"status": "error", "log": str(e)}
+    global ingest_status
+    if ingest_status["running"]:
+        return {"status": "already_running", "ingest": ingest_status}
+    threading.Thread(target=run_ingest_background, daemon=True).start()
+    return {"status": "started", "message": "Ingest running in background. Check /health for progress."}
+
+
+@app.get("/ingest/status")
+def ingest_status_check():
+    return ingest_status
 
 
 @app.get("/signals")
