@@ -1,36 +1,34 @@
+"""
+ingest.py - Pulls all data needed for backtest.
+1. Weather Underground historical max temps (confirmed resolution source)
+2. Polymarket weather markets with outcomes
+3. Price snapshots for each market
+"""
+
 import requests
 import time
 import json
+import re
 from datetime import datetime, timedelta, timezone, date
 from data.database import get_conn, init_db
 
-GAMMA_BASE = "https://gamma-api.polymarket.com"
-CLOB_BASE  = "https://clob.polymarket.com"
-METEO_BASE = "https://archive-api.open-meteo.com"
+WU_API_KEY = "e1f10a1e78da46f5b10a1e78da96f525"
 
-WEATHER_CITIES = {
-    "London":        {"lat": 51.5074,  "lon": -0.1278},
-    "New York":      {"lat": 40.7128,  "lon": -74.0060},
-    "Los Angeles":   {"lat": 34.0522,  "lon": -118.2437},
-    "Chicago":       {"lat": 41.8781,  "lon": -87.6298},
-    "Miami":         {"lat": 25.7617,  "lon": -80.1918},
-    "Tokyo":         {"lat": 35.6762,  "lon": 139.6503},
-    "Sydney":        {"lat": -33.8688, "lon": 151.2093},
-    "Paris":         {"lat": 48.8566,  "lon": 2.3522},
-    "Berlin":        {"lat": 52.5200,  "lon": 13.4050},
-    "Dubai":         {"lat": 25.2048,  "lon": 55.2708},
-    "Singapore":     {"lat": 1.3521,   "lon": 103.8198},
-    "Seoul":         {"lat": 37.5665,  "lon": 126.9780},
-    "Hong Kong":     {"lat": 22.3193,  "lon": 114.1694},
-    "San Francisco": {"lat": 37.7749,  "lon": -122.4194},
-    "Boston":        {"lat": 42.3601,  "lon": -71.0589},
+# Confirmed WU stations matching Polymarket resolution
+CITY_STATIONS = {
+    "Chicago":       "KORD",
+    "Dallas":        "KDFW",
+    "Atlanta":       "KATL",
+    "Miami":         "KMIA",
+    "New York City": "KLGA",
+    "Seattle":       "KSEA",
+    "Boston":        "KBOS",
+    "Los Angeles":   "KLAX",
+    "San Francisco": "KSFO",
 }
 
-WEATHER_KEYWORDS = [
-    "temperature", "celsius", "fahrenheit", "highest temp",
-    "lowest temp", "high temp", "low temp", "daily high",
-    "daily low", "weather", "degrees", "exceed", "°c", "°f"
-]
+GAMMA_BASE = "https://gamma-api.polymarket.com"
+CLOB_BASE  = "https://clob.polymarket.com"
 
 
 def safe_get(url, params=None, retries=3, delay=1.0):
@@ -42,23 +40,126 @@ def safe_get(url, params=None, retries=3, delay=1.0):
             if r.status_code == 429:
                 print("  [RATE LIMIT] sleeping 30s...")
                 time.sleep(30)
-            else:
-                print(f"  [WARN] {r.status_code}")
         except Exception as e:
-            print(f"  [ERR] attempt {i+1}: {e}")
+            print(f"  [ERR] {e}")
         time.sleep(delay * (2 ** i))
     return None
 
 
-def is_weather_market(question, category):
-    q   = (question or "").lower()
-    cat = (category or "").lower()
-    if "weather" in cat:
-        return True
-    return any(kw in q for kw in WEATHER_KEYWORDS)
+# ── 1. Weather Underground Historical Temps ───────────────────────────────────
+
+def fetch_wu_temps(days_back=120):
+    """Pull historical max temps from WU for each city."""
+    end_date   = date.today()
+    start_date = end_date - timedelta(days=days_back)
+    conn       = get_conn()
+    saved      = 0
+
+    print(f"\n[WU] Fetching temps {start_date} → {end_date}...")
+
+    for city, station in CITY_STATIONS.items():
+        current = start_date
+        city_saved = 0
+
+        while current <= end_date:
+            date_str = current.strftime('%Y-%m-%d')
+            date_fmt = current.strftime('%Y%m%d')
+
+            # Check if already have this
+            c = conn.cursor()
+            c.execute("SELECT COUNT(*) FROM wu_temps WHERE city=? AND date=?", (city, date_str))
+            if c.fetchone()[0] > 0:
+                current += timedelta(days=1)
+                continue
+
+            r = requests.get(
+                f"https://api.weather.com/v1/location/{station}:9:US/observations/historical.json",
+                params={"apiKey": WU_API_KEY, "units": "e", "startDate": date_fmt},
+                timeout=15
+            )
+
+            if r.status_code == 200:
+                obs = r.json().get("observations", [])
+                temps = [o.get("temp") for o in obs if o.get("temp")]
+                if temps:
+                    max_t = max(temps)
+                    conn.execute(
+                        "INSERT OR IGNORE INTO wu_temps (city, station, date, max_temp_f) VALUES (?,?,?,?)",
+                        (city, station, date_str, max_t)
+                    )
+                    conn.commit()
+                    city_saved += 1
+                    saved += 1
+
+            current += timedelta(days=1)
+            time.sleep(0.3)
+
+        print(f"  {city} ({station}): {city_saved} days saved")
+
+    conn.close()
+    print(f"[WU] Done: {saved} city-days\n")
+    return saved
 
 
-def fetch_weather_markets(days_back=1095):
+# ── 2. Polymarket Weather Markets ─────────────────────────────────────────────
+
+def parse_market(question):
+    """
+    Parse Polymarket temperature question into structured data.
+    Returns dict with city, target_low, target_high, unit, market_type
+    
+    Formats:
+    - "between 76-77°F" → {low:76, high:77, unit:F, type:range}
+    - "56°F or higher"  → {low:56, high:999, unit:F, type:above}
+    - "63°F or below"   → {low:-999, high:63, unit:F, type:below}
+    - "be 12°C"         → {low:12, high:12, unit:C, type:exact}
+    - "18°C or higher"  → {low:18, high:999, unit:C, type:above}
+    """
+    q = question.lower()
+
+    # Find city
+    city = None
+    for c in CITY_STATIONS.keys():
+        if c.lower() in q:
+            city = c
+            break
+    if not city:
+        return None
+
+    # Determine unit
+    unit = "F" if "°f" in q or "fahrenheit" in q else "C"
+
+    # Parse range formats
+    # "between 76-77"
+    m = re.search(r'between\s+(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)', q)
+    if m:
+        return {"city": city, "target_low": float(m.group(1)),
+                "target_high": float(m.group(2)), "unit": unit, "market_type": "range"}
+
+    # "56F or higher" / "18°C or higher"
+    m = re.search(r'(\d+(?:\.\d+)?)\s*°?[fc]?\s*or\s*higher', q)
+    if m:
+        return {"city": city, "target_low": float(m.group(1)),
+                "target_high": 9999, "unit": unit, "market_type": "above"}
+
+    # "63F or below" / "7°C or below"
+    m = re.search(r'(\d+(?:\.\d+)?)\s*°?[fc]?\s*or\s*below', q)
+    if m:
+        return {"city": city, "target_low": -9999,
+                "target_high": float(m.group(1)), "unit": unit, "market_type": "below"}
+
+    # "be 12°C" exact
+    m = re.search(r'be\s+(\d+(?:\.\d+)?)\s*°?[fc]?\s+on', q)
+    if m:
+        t = float(m.group(1))
+        return {"city": city, "target_low": t,
+                "target_high": t, "unit": unit, "market_type": "exact"}
+
+    return None
+
+
+def fetch_polymarket_markets(days_back=120):
+    """Pull weather markets for our tracked cities only."""
     conn   = get_conn()
     c      = conn.cursor()
     cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
@@ -67,12 +168,12 @@ def fetch_weather_markets(days_back=1095):
     saved  = 0
     stop   = False
 
-    print(f"\n[STEP 1] Pulling weather markets since {cutoff.date()}...")
+    print(f"[POLY] Fetching markets since {cutoff.date()}...")
 
     while not stop:
         data = safe_get(f"{GAMMA_BASE}/markets", params={
-            "closed": "true", "limit": limit,
-            "offset": offset, "order": "startDate", "ascending": "false"
+            "closed": "true", "limit": limit, "offset": offset,
+            "order": "startDate", "ascending": "false"
         })
         if not data:
             break
@@ -92,16 +193,25 @@ def fetch_weather_markets(days_back=1095):
                 continue
 
             question = m.get("question", "")
-            category = m.get("category") or m.get("groupItemTitle") or ""
-
-            if not is_weather_market(question, category):
+            parsed   = parse_market(question)
+            if not parsed:
                 continue
 
-            outcome = m.get("winnerOutcome") or m.get("resolvedOutcome")
-            if not outcome and m.get("resolved"):
-                outcome = "Yes"
+            # Get outcome from outcomePrices
+            prices = m.get("outcomePrices", "[]")
+            if isinstance(prices, str):
+                try:
+                    prices = json.loads(prices)
+                except Exception:
+                    prices = []
+            outcome = None
+            if prices:
+                if str(prices[0]) == "1":
+                    outcome = "Yes"
+                elif str(prices[1]) == "1":
+                    outcome = "No"
 
-            market_id = str(m.get("id") or m.get("conditionId") or "")
+            market_id = str(m.get("id") or "")
             if not market_id:
                 continue
 
@@ -113,13 +223,19 @@ def fetch_weather_markets(days_back=1095):
                 created_at = 0
 
             try:
-                c.execute("INSERT OR IGNORE INTO markets (id, question, category, market_type, created_at, resolved_at, end_date_iso, outcome, volume, liquidity) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (market_id, question, category, "weather", created_at,
-                     int(end_dt.timestamp()), end_str, outcome,
-                     float(m.get("volume") or 0), float(m.get("liquidity") or 0)))
+                c.execute("""INSERT OR IGNORE INTO markets
+                    (id, question, city, target_low, target_high, market_type,
+                     unit, resolved_at, created_at, outcome, last_trade_price, volume)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (market_id, question, parsed["city"],
+                     parsed["target_low"], parsed["target_high"],
+                     parsed["market_type"], parsed["unit"],
+                     int(end_dt.timestamp()), created_at, outcome,
+                     float(m.get("lastTradePrice") or 0),
+                     float(m.get("volume") or 0)))
                 if c.rowcount > 0:
                     batch += 1
-            except Exception:
+            except Exception as e:
                 continue
 
         conn.commit()
@@ -133,28 +249,33 @@ def fetch_weather_markets(days_back=1095):
         time.sleep(0.3)
 
     conn.close()
-    print(f"\n[STEP 1] Done: {saved} weather markets\n")
+    print(f"[POLY] Done: {saved} markets\n")
     return saved
 
 
-def fetch_weather_price_histories():
+# ── 3. Price Histories ────────────────────────────────────────────────────────
+
+def fetch_price_histories():
+    """Pull price histories using interval=all to get full history."""
     conn = get_conn()
     c    = conn.cursor()
-    c.execute("SELECT id FROM markets WHERE market_type='weather' AND outcome IS NOT NULL AND volume > 100 ORDER BY volume DESC")
+    c.execute("""SELECT id FROM markets
+                 WHERE outcome IS NOT NULL AND volume > 100
+                 ORDER BY volume DESC""")
     market_ids = [r[0] for r in c.fetchall()]
     conn.close()
 
-    print(f"[STEP 2] Price histories for {len(market_ids)} markets...")
-
+    print(f"[PRICES] Fetching price histories for {len(market_ids)} markets...")
     saved = 0
+
     for i, mid in enumerate(market_ids):
         conn = get_conn()
         c    = conn.cursor()
         c.execute("SELECT COUNT(*) FROM price_snapshots WHERE market_id=?", (mid,))
-        exists = c.fetchone()[0] > 0
-        conn.close()
-        if exists:
+        if c.fetchone()[0] > 0:
+            conn.close()
             continue
+        conn.close()
 
         mdata = safe_get(f"{GAMMA_BASE}/markets/{mid}", delay=0.3)
         if not mdata:
@@ -170,104 +291,59 @@ def fetch_weather_price_histories():
             continue
 
         hist = safe_get(f"{CLOB_BASE}/prices-history", params={
-            "market": tokens[0], "interval": "1h", "fidelity": 60
+            "market": tokens[0], "interval": "all", "fidelity": 1
         }, delay=0.3)
 
         if not hist or "history" not in hist:
             continue
 
-        rows = [
-            (mid, int(p["t"]), float(p["p"]),
-             round(1 - float(p["p"]), 6), 0.0)
-            for p in hist["history"]
-            if p.get("t") and p.get("p")
-        ]
+        rows = [(mid, int(p["t"]), float(p["p"]))
+                for p in hist["history"] if p.get("t") and p.get("p")]
 
         if rows:
             conn = get_conn()
-            conn.executemany("INSERT OR IGNORE INTO price_snapshots (market_id, timestamp, yes_price, no_price, volume_at_time) VALUES (?,?,?,?,?)", rows)
+            conn.executemany(
+                "INSERT OR IGNORE INTO price_snapshots (market_id, timestamp, yes_price) VALUES (?,?,?)",
+                rows)
             conn.commit()
             conn.close()
             saved += len(rows)
 
-        if i % 100 == 0:
-            print(f"  [{i}/{len(market_ids)}] done | {saved} snapshots")
+        if i % 50 == 0:
+            print(f"  [{i}/{len(market_ids)}] {saved} snapshots")
+        time.sleep(0.3)
 
-        time.sleep(0.5)
-
-    print(f"\n[STEP 2] Done: {saved} price snapshots\n")
+    print(f"[PRICES] Done: {saved} snapshots\n")
     return saved
 
 
-def fetch_weather_history(days_back=1095):
-    end_date   = date.today()
-    start_date = end_date - timedelta(days=days_back)
-    conn       = get_conn()
-    saved      = 0
+# ── Main ──────────────────────────────────────────────────────────────────────
 
-    print(f"[STEP 3] Open-Meteo temps {start_date} → {end_date}...")
-
-    for city, coords in WEATHER_CITIES.items():
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM weather_data WHERE city=?", (city,))
-        if c.fetchone()[0] > 100:
-            print(f"  {city}: already loaded")
-            continue
-
-        data = safe_get(f"{METEO_BASE}/v1/archive", params={
-            "latitude":   coords["lat"],
-            "longitude":  coords["lon"],
-            "start_date": str(start_date),
-            "end_date":   str(end_date),
-            "daily":      "temperature_2m_max,temperature_2m_min",
-            "timezone":   "UTC"
-        })
-
-        if not data or "daily" not in data:
-            print(f"  {city}: no data")
-            continue
-
-        rows = [
-            (city, d, h, l, h, l)
-            for d, h, l in zip(
-                data["daily"]["time"],
-                data["daily"]["temperature_2m_max"],
-                data["daily"]["temperature_2m_min"]
-            )
-            if h is not None and l is not None
-        ]
-
-        conn.executemany("INSERT OR IGNORE INTO weather_data (city, date, forecast_high, forecast_low, actual_high, actual_low) VALUES (?,?,?,?,?,?)", rows)
-        conn.commit()
-        saved += len(rows)
-        print(f"  {city}: {len(rows)} days")
-        time.sleep(0.5)
-
-    conn.close()
-    print(f"\n[STEP 3] Done: {saved} city-days\n")
-    return saved
-
-
-def run_full_ingest(days_back=1095):
+def run_full_ingest(days_back=120):
     init_db()
     print(f"\n{'='*55}")
-    print(f"  POLYEDGE WEATHER INGEST — {days_back} days")
+    print(f"  POLYEDGE INGEST — {days_back} days")
     print(f"{'='*55}\n")
 
-    fetch_weather_markets(days_back=days_back)
-    fetch_weather_price_histories()
-    fetch_weather_history(days_back=days_back)
+    fetch_wu_temps(days_back=days_back)
+    fetch_polymarket_markets(days_back=days_back)
+    fetch_price_histories()
 
     conn = get_conn()
     c    = conn.cursor()
     print(f"\n{'='*55}")
-    print(f"  INGEST COMPLETE")
+    print(f"  SUMMARY")
     print(f"{'='*55}")
-    for table in ["markets", "price_snapshots", "weather_data"]:
+    for table in ["markets", "price_snapshots", "wu_temps"]:
         c.execute(f"SELECT COUNT(*) FROM {table}")
         print(f"  {table:<20} {c.fetchone()[0]:>10,} rows")
+    c.execute("SELECT COUNT(*) FROM markets WHERE outcome='Yes'")
+    yes = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM markets WHERE outcome='No'")
+    no  = c.fetchone()[0]
+    print(f"\n  YES: {yes:,}  NO: {no:,}")
     conn.close()
 
 
 if __name__ == '__main__':
-    run_full_ingest(days_back=1095)
+    run_full_ingest(days_back=120)
