@@ -143,6 +143,26 @@ def ingest_status_check():
     return ingest_status
 
 
+
+@app.get("/debug/polymarket")
+def debug_polymarket():
+    import requests as req
+    try:
+        r = req.get("https://gamma-api.polymarket.com/markets", params={
+            "limit": 5,
+            "search": "temperature Chicago",
+            "order": "endDate",
+            "ascending": "false",
+        }, timeout=15)
+        data = r.json()
+        return {
+            "status": r.status_code,
+            "count": len(data),
+            "questions": [m.get("question", "") for m in data]
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
 @app.get("/signals")
 def get_signals():
     try:
