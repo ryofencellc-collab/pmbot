@@ -114,7 +114,7 @@ def get_signals():
         return {"signals": [], "log": str(e), "date": ""}
 
 
-@app.post("/morning")
+@app.api_route("/morning", methods=["GET", "POST"])
 def morning_session():
     try:
         from strategy.paper_trade import run_morning_session
@@ -124,7 +124,7 @@ def morning_session():
         return {"trades": [], "log": str(e)}
 
 
-@app.post("/evening")
+@app.api_route("/evening", methods=["GET", "POST"])
 def evening_session():
     try:
         from strategy.paper_trade import run_evening_session
