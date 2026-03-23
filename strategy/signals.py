@@ -95,8 +95,8 @@ def get_open_markets(city, target_date=None):
 
     c.execute("""SELECT id, question, target_low, target_high, market_type, unit
                  FROM markets
-                 WHERE city=?
-                 AND resolved_at >= ? AND resolved_at < ?""",
+                 WHERE city=%s
+                 AND resolved_at >= %s AND resolved_at < %s""",
               (city, ts_start, ts_end))
     markets = [dict(r) for r in c.fetchall()]
     conn.close()
