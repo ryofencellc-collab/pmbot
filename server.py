@@ -143,93 +143,188 @@ def ingest_status_check():
     return ingest_status
 
 
-@app.get("/debug/slug")
-def debug_slug():
+@app.get("/debug")
+def debug_full():
+    """
+    Full system diagnostic. Tests every layer end to end for Chicago only:
+    1. DB connection + schema
+    2. Polymarket API fetch for today slug
+    3. Parse all 11 groupItemTitles
+    4. Insert all 11 markets into DB
+    5. Verify they were written by reading back
+    6. NOAA forecast for Chicago
+    Returns complete picture — no guessing.
+    """
     import requests as req
-    from datetime import date
+    import json
+    import re
+    from datetime import date, datetime
+    from data.database import get_conn
+
+    out = {}
+
+    # ── 1. DB connection ──────────────────────────────────────────────────────
+    try:
+        conn = get_conn()
+        c    = conn.cursor()
+        c.execute("SELECT COUNT(*) as count FROM markets")
+        existing = c.fetchone()["count"]
+        c.execute("SELECT version() as v")
+        pg_version = c.fetchone()["v"]
+        conn.close()
+        out["1_db"] = {"status": "ok", "existing_markets": existing, "pg": pg_version}
+    except Exception as e:
+        out["1_db"] = {"status": "ERROR", "error": str(e)}
+        return out  # no point continuing
+
+    # ── 2. Polymarket API fetch ───────────────────────────────────────────────
     today = date.today()
     month = today.strftime("%B").lower()
     slug  = f"highest-temperature-in-chicago-on-{month}-{today.day}-{today.year}"
-    url   = "https://gamma-api.polymarket.com/events"
     try:
-        r    = req.get(url, params={"slug": slug}, timeout=20,
+        r    = req.get("https://gamma-api.polymarket.com/events",
+                       params={"slug": slug}, timeout=20,
                        headers={"User-Agent": "PolyEdge/1.0"})
         data = r.json()
-        return {
+        raw_markets = data[0].get("markets", []) if isinstance(data, list) and data else []
+        out["2_api"] = {
+            "status":       "ok",
             "slug":         slug,
-            "status_code":  r.status_code,
-            "result_count": len(data) if isinstance(data, list) else "not a list",
-            "market_count": len(data[0].get("markets", [])) if isinstance(data, list) and data else 0,
-            "market_titles": [m.get("groupItemTitle") for m in data[0].get("markets", [])] if isinstance(data, list) and data else [],
+            "http_status":  r.status_code,
+            "events_found": len(data) if isinstance(data, list) else 0,
+            "markets_found": len(raw_markets),
         }
     except Exception as e:
-        return {"slug": slug, "error": str(e)}
+        out["2_api"] = {"status": "ERROR", "slug": slug, "error": str(e)}
+        return out
 
+    if not raw_markets:
+        out["2_api"]["status"] = "ERROR — no markets in event"
+        return out
 
+    # ── 3. Parse groupItemTitles ──────────────────────────────────────────────
+    def parse_title(title):
+        t = title.strip().lower()
+        m = re.match(r'^(\d+(?:\.\d+)?)\s*°?f?\s+or\s+(?:below|lower)$', t)
+        if m:
+            return {"market_type": "below", "target_low": -9999, "target_high": float(m.group(1))}
+        m = re.match(r'^(\d+(?:\.\d+)?)\s*°?f?\s+or\s+(?:higher|above)$', t)
+        if m:
+            return {"market_type": "above", "target_low": float(m.group(1)), "target_high": 9999}
+        m = re.match(r'^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)\s*°?f?$', t)
+        if m:
+            return {"market_type": "range", "target_low": float(m.group(1)), "target_high": float(m.group(2))}
+        return None
 
+    parse_results = []
+    for m in raw_markets:
+        title  = m.get("groupItemTitle", "")
+        parsed = parse_title(title)
+        parse_results.append({"title": title, "parsed": parsed, "ok": parsed is not None})
 
-@app.get("/debug/polymarket")
-def debug_polymarket():
-    import requests as req
-    results = {}
+    failed_parses = [p for p in parse_results if not p["ok"]]
+    out["3_parse"] = {
+        "status":        "ok" if not failed_parses else "SOME FAILED",
+        "total":         len(parse_results),
+        "parsed_ok":     len([p for p in parse_results if p["ok"]]),
+        "failed":        failed_parses,
+        "all_titles":    [p["title"] for p in parse_results],
+    }
 
-    # Test 1: search by tag
+    # ── 4. Insert all markets ─────────────────────────────────────────────────
+    insert_results = []
+    for m, p in zip(raw_markets, parse_results):
+        if not p["ok"]:
+            insert_results.append({"id": m.get("id"), "status": "SKIP — parse failed"})
+            continue
+
+        prices = m.get("outcomePrices", "[]")
+        if isinstance(prices, str):
+            prices = json.loads(prices)
+        yes_price = float(prices[0]) if prices else 0.0
+
+        outcome = None
+        if m.get("closed"):
+            if prices and str(prices[0]) == "1":   outcome = "Yes"
+            elif len(prices) > 1 and str(prices[1]) == "1": outcome = "No"
+
+        end_str = m.get("endDate", "")
+        try:
+            resolved_at = int(datetime.fromisoformat(end_str.replace("Z", "+00:00")).timestamp())
+        except Exception:
+            resolved_at = 0
+
+        start_str = m.get("startDate", "")
+        try:
+            created_at = int(datetime.fromisoformat(start_str.replace("Z", "+00:00")).timestamp())
+        except Exception:
+            created_at = 0
+
+        row = (
+            str(m["id"]), m.get("question", ""), "Chicago",
+            p["parsed"]["target_low"], p["parsed"]["target_high"],
+            p["parsed"]["market_type"], "F",
+            resolved_at, created_at, outcome,
+            yes_price, float(m.get("liquidityNum") or 0)
+        )
+
+        try:
+            conn = get_conn()
+            c    = conn.cursor()
+            c.execute("""
+                INSERT INTO markets
+                    (id, question, city, target_low, target_high,
+                     market_type, unit, resolved_at, created_at,
+                     outcome, last_trade_price, volume)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (id) DO UPDATE SET
+                    outcome          = EXCLUDED.outcome,
+                    last_trade_price = EXCLUDED.last_trade_price,
+                    volume           = EXCLUDED.volume
+            """, row)
+            conn.commit()
+            conn.close()
+            insert_results.append({"id": str(m["id"]), "title": p["title"], "status": "ok", "yes_price": yes_price})
+        except Exception as e:
+            insert_results.append({"id": str(m["id"]), "title": p["title"], "status": "ERROR", "error": str(e)})
+
+    errors = [r for r in insert_results if r["status"] not in ("ok",)]
+    out["4_insert"] = {
+        "status":   "ok" if not errors else "SOME ERRORS",
+        "inserted": len([r for r in insert_results if r["status"] == "ok"]),
+        "errors":   errors,
+        "detail":   insert_results,
+    }
+
+    # ── 5. Verify DB wrote correctly ──────────────────────────────────────────
     try:
-        r = req.get("https://gamma-api.polymarket.com/markets", params={
-            "limit": 5, "tag": "weather", "order": "endDate", "ascending": "false"
-        }, timeout=15)
-        results["tag_weather"] = [m.get("question","") for m in r.json()]
+        conn = get_conn()
+        c    = conn.cursor()
+        c.execute("SELECT COUNT(*) as count FROM markets WHERE city='Chicago'")
+        chicago_count = c.fetchone()["count"]
+        c.execute("SELECT id, question, target_low, target_high, market_type, last_trade_price FROM markets WHERE city='Chicago' ORDER BY target_low LIMIT 5")
+        sample = [dict(r) for r in c.fetchall()]
+        conn.close()
+        out["5_verify"] = {"status": "ok", "chicago_markets_in_db": chicago_count, "sample": sample}
     except Exception as e:
-        results["tag_weather"] = str(e)
+        out["5_verify"] = {"status": "ERROR", "error": str(e)}
 
-    # Test 2: category weather
+    # ── 6. NOAA forecast ──────────────────────────────────────────────────────
     try:
-        r = req.get("https://gamma-api.polymarket.com/markets", params={
-            "limit": 5, "category": "weather", "order": "endDate", "ascending": "false"
-        }, timeout=15)
-        results["category_weather"] = [m.get("question","") for m in r.json()]
-    except Exception as e:
-        results["category_weather"] = str(e)
-
-    # Test 3: get events with weather tag
-    try:
-        r = req.get("https://gamma-api.polymarket.com/events", params={
-            "limit": 5, "tag": "weather", "order": "endDate", "ascending": "false"
-        }, timeout=15)
-        results["events_weather"] = [m.get("title","") for m in r.json()]
-    except Exception as e:
-        results["events_weather"] = str(e)
-
-    # Test 4: get events with temperature keyword
-    try:
-        r = req.get("https://gamma-api.polymarket.com/events", params={
-            "limit": 5, "search": "temperature", "order": "endDate", "ascending": "false"
-        }, timeout=15)
-        results["events_search_temp"] = [m.get("title","") for m in r.json()]
-    except Exception as e:
-        results["events_search_temp"] = str(e)
-
-    return results
-
-
-@app.get("/debug/polymarket2")
-def debug_polymarket2():
-    import requests as req
-    try:
-        r = req.get("https://gamma-api.polymarket.com/markets", params={
-            "limit": 5,
-            "search": "temperature Chicago",
-            "order": "endDate",
-            "ascending": "false",
-        }, timeout=15)
-        data = r.json()
-        return {
-            "status": r.status_code,
-            "count": len(data),
-            "questions": [m.get("question", "") for m in data]
+        r = req.get("https://api.weather.gov/gridpoints/LOT/76,73/forecast",
+                    timeout=10, headers={"User-Agent": "PolyEdge/1.0"})
+        periods = r.json()["properties"]["periods"]
+        daytime = [p for p in periods if p.get("isDaytime")]
+        out["6_noaa"] = {
+            "status":   "ok",
+            "forecast": daytime[0]["temperature"] if daytime else None,
+            "unit":     daytime[0]["temperatureUnit"] if daytime else None,
+            "summary":  daytime[0]["shortForecast"] if daytime else None,
         }
     except Exception as e:
-        return {"error": str(e)}
+        out["6_noaa"] = {"status": "ERROR", "error": str(e)}
+
+    return out
 
 @app.get("/signals")
 def get_signals():
