@@ -13,7 +13,7 @@ def init_db():
     conn = get_conn()
     c = conn.cursor()
 
-    # Create tables
+    # Core tables
     c.execute("CREATE TABLE IF NOT EXISTS markets (id TEXT PRIMARY KEY)")
     c.execute("CREATE TABLE IF NOT EXISTS price_snapshots (id SERIAL PRIMARY KEY, market_id TEXT, timestamp BIGINT, yes_price REAL, UNIQUE(market_id, timestamp))")
     c.execute("CREATE TABLE IF NOT EXISTS wu_temps (id SERIAL PRIMARY KEY, city TEXT, station TEXT, date TEXT, max_temp_f REAL, UNIQUE(city, date))")
@@ -21,7 +21,19 @@ def init_db():
     c.execute("CREATE TABLE IF NOT EXISTS session_logs (id SERIAL PRIMARY KEY, session_type TEXT, logged_at TEXT, content TEXT)")
     c.execute("CREATE TABLE IF NOT EXISTS backtest_trades (id SERIAL PRIMARY KEY, sim_date TEXT, market_id TEXT, question TEXT, city TEXT, entry_price REAL, noaa_forecast_f REAL, wu_actual_f REAL, predicted_range TEXT, size REAL, capital_at_entry REAL, outcome TEXT, pnl REAL)")
 
-    # Add missing columns to markets if they don't exist
+    # NOAA forecast tracking — records forecast vs actual for error model
+    c.execute("""CREATE TABLE IF NOT EXISTS noaa_forecasts (
+        id SERIAL PRIMARY KEY,
+        city TEXT,
+        date TEXT,
+        forecast_f REAL,
+        actual_f REAL,
+        delta_f REAL,
+        recorded_at TEXT,
+        UNIQUE(city, date)
+    )""")
+
+    # Add missing columns to markets (safe migrations)
     migrations = [
         "ALTER TABLE markets ADD COLUMN IF NOT EXISTS question TEXT",
         "ALTER TABLE markets ADD COLUMN IF NOT EXISTS city TEXT",
