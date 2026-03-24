@@ -1,10 +1,8 @@
 """
 signals.py - Core signal engine for all approved cities.
 
-Approved cities (verified Open-Meteo accuracy < 2°C/3°F avg error):
-Madrid, Beijing, Milan, Singapore, London, Hong Kong, Warsaw, Wuhan,
-Sao Paulo, Munich, Seoul, Chengdu, Tokyo, Seattle, Dallas, Paris,
-Atlanta, Tel Aviv, Shanghai, Taipei, Miami
+APPROVED cities (confirmed positive ROI from 30-day real backtest):
+London, NYC, Toronto, Dallas, Atlanta, Seattle, Paris, Sao Paulo
 
 Strategy:
 - Get Open-Meteo forecast for each city
@@ -23,28 +21,20 @@ from data.database import get_conn
 # Verified Open-Meteo accuracy from real data 7-day comparison
 # Format: slug, lat, lon, timezone, unit (C or F), temp_unit for API
 
+# APPROVED CITIES — confirmed positive ROI from 30-day real data backtest
+# London +8% | NYC +4% | Sao Paulo +3.8% | Toronto +1.7% | Seattle +1.7%
+# Dallas +1.2% | Atlanta +0.6% | Paris +0.4%
+# REJECTED: Miami, Buenos Aires, Seoul, Tokyo, Tel Aviv, Warsaw, Beijing,
+#            Taipei, Shanghai, Munich, Milan, Madrid, Singapore
 CITIES = {
-    "London":       {"slug": "london",       "lat": 51.5074,  "lon": -0.1278,   "tz": "Europe/London",                      "unit": "C", "temp_unit": "celsius",    "mean_delta": 0.5,  "std": 1.5},
-    "NYC":          {"slug": "nyc",          "lat": 40.7128,  "lon": -74.0060,  "tz": "America/New_York",                   "unit": "F", "temp_unit": "fahrenheit", "mean_delta": 4.0,  "std": 3.0},
-    "Toronto":      {"slug": "toronto",      "lat": 43.6532,  "lon": -79.3832,  "tz": "America/Toronto",                    "unit": "C", "temp_unit": "celsius",    "mean_delta": 0.5,  "std": 2.0},
-    "Seoul":        {"slug": "seoul",        "lat": 37.5665,  "lon": 126.9780,  "tz": "Asia/Seoul",                         "unit": "C", "temp_unit": "celsius",    "mean_delta": 0.5,  "std": 1.5},
-    "Dallas":       {"slug": "dallas",       "lat": 32.7767,  "lon": -96.7970,  "tz": "America/Chicago",                    "unit": "F", "temp_unit": "fahrenheit", "mean_delta": 1.0,  "std": 2.5},
-    "Atlanta":      {"slug": "atlanta",      "lat": 33.7490,  "lon": -84.3880,  "tz": "America/New_York",                   "unit": "F", "temp_unit": "fahrenheit", "mean_delta": 1.0,  "std": 2.5},
-    "Miami":        {"slug": "miami",        "lat": 25.7617,  "lon": -80.1918,  "tz": "America/New_York",                   "unit": "F", "temp_unit": "fahrenheit", "mean_delta": 2.5,  "std": 3.0},
-    "Seattle":      {"slug": "seattle",      "lat": 47.6062,  "lon": -122.3321, "tz": "America/Los_Angeles",                "unit": "F", "temp_unit": "fahrenheit", "mean_delta": 1.0,  "std": 2.5},
-    "Paris":        {"slug": "paris",        "lat": 48.8566,  "lon": 2.3522,    "tz": "Europe/Paris",                       "unit": "C", "temp_unit": "celsius",    "mean_delta": 0.5,  "std": 1.5},
-    "Tokyo":        {"slug": "tokyo",        "lat": 35.6762,  "lon": 139.6503,  "tz": "Asia/Tokyo",                         "unit": "C", "temp_unit": "celsius",    "mean_delta": 1.0,  "std": 2.0},
-    "Singapore":    {"slug": "singapore",    "lat": 1.3521,   "lon": 103.8198,  "tz": "Asia/Singapore",                     "unit": "C", "temp_unit": "celsius",    "mean_delta": 0.5,  "std": 1.0},
-    "Madrid":       {"slug": "madrid",       "lat": 40.4168,  "lon": -3.7038,   "tz": "Europe/Madrid",                      "unit": "C", "temp_unit": "celsius",    "mean_delta": 0.3,  "std": 1.0},
-    "Warsaw":       {"slug": "warsaw",       "lat": 52.2297,  "lon": 21.0122,   "tz": "Europe/Warsaw",                      "unit": "C", "temp_unit": "celsius",    "mean_delta": 0.5,  "std": 1.5},
-    "Beijing":      {"slug": "beijing",      "lat": 39.9042,  "lon": 116.4074,  "tz": "Asia/Shanghai",                      "unit": "C", "temp_unit": "celsius",    "mean_delta": 0.5,  "std": 1.0},
-    "Shanghai":     {"slug": "shanghai",     "lat": 31.2304,  "lon": 121.4737,  "tz": "Asia/Shanghai",                      "unit": "C", "temp_unit": "celsius",    "mean_delta": 1.0,  "std": 2.0},
-    "Taipei":       {"slug": "taipei",       "lat": 25.0330,  "lon": 121.5654,  "tz": "Asia/Taipei",                        "unit": "C", "temp_unit": "celsius",    "mean_delta": 1.0,  "std": 2.0},
-    "Tel Aviv":     {"slug": "tel-aviv",     "lat": 32.0853,  "lon": 34.7818,   "tz": "Asia/Jerusalem",                     "unit": "C", "temp_unit": "celsius",    "mean_delta": 1.0,  "std": 1.5},
-    "Sao Paulo":    {"slug": "sao-paulo",    "lat": -23.5505, "lon": -46.6333,  "tz": "America/Sao_Paulo",                  "unit": "C", "temp_unit": "celsius",    "mean_delta": 0.5,  "std": 1.5},
-    "Milan":        {"slug": "milan",        "lat": 45.4642,  "lon": 9.1900,    "tz": "Europe/Rome",                        "unit": "C", "temp_unit": "celsius",    "mean_delta": 0.5,  "std": 1.0},
-    "Munich":       {"slug": "munich",       "lat": 48.1351,  "lon": 11.5820,   "tz": "Europe/Berlin",                      "unit": "C", "temp_unit": "celsius",    "mean_delta": 0.5,  "std": 1.5},
-    "Buenos Aires": {"slug": "buenos-aires", "lat": -34.6037, "lon": -58.3816,  "tz": "America/Argentina/Buenos_Aires",     "unit": "C", "temp_unit": "celsius",    "mean_delta": 2.0,  "std": 2.0},
+    "London":    {"slug": "london",    "lat": 51.5074,  "lon": -0.1278,   "tz": "Europe/London",         "unit": "C", "temp_unit": "celsius",    "mean_delta": 0.5, "std": 1.5},
+    "NYC":       {"slug": "nyc",       "lat": 40.7128,  "lon": -74.0060,  "tz": "America/New_York",      "unit": "F", "temp_unit": "fahrenheit", "mean_delta": 4.0, "std": 3.0},
+    "Toronto":   {"slug": "toronto",   "lat": 43.6532,  "lon": -79.3832,  "tz": "America/Toronto",       "unit": "C", "temp_unit": "celsius",    "mean_delta": 0.5, "std": 2.0},
+    "Dallas":    {"slug": "dallas",    "lat": 32.7767,  "lon": -96.7970,  "tz": "America/Chicago",       "unit": "F", "temp_unit": "fahrenheit", "mean_delta": 1.0, "std": 2.5},
+    "Atlanta":   {"slug": "atlanta",   "lat": 33.7490,  "lon": -84.3880,  "tz": "America/New_York",      "unit": "F", "temp_unit": "fahrenheit", "mean_delta": 1.0, "std": 2.5},
+    "Seattle":   {"slug": "seattle",   "lat": 47.6062,  "lon": -122.3321, "tz": "America/Los_Angeles",   "unit": "F", "temp_unit": "fahrenheit", "mean_delta": 1.0, "std": 2.5},
+    "Paris":     {"slug": "paris",     "lat": 48.8566,  "lon": 2.3522,    "tz": "Europe/Paris",          "unit": "C", "temp_unit": "celsius",    "mean_delta": 0.5, "std": 1.5},
+    "Sao Paulo": {"slug": "sao-paulo", "lat": -23.5505, "lon": -46.6333,  "tz": "America/Sao_Paulo",     "unit": "C", "temp_unit": "celsius",    "mean_delta": 0.5, "std": 1.5},
 }
 
 MAX_SIGNALS_PER_CITY = 3
