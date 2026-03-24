@@ -1,11 +1,5 @@
 """
-ingest.py - Polymarket temperature market ingestion.
-
-Confirmed working cities:
-  - Chicago (°F, 2°F ranges, KORD)
-  - London  (°C, exact degree, EGLC)
-
-Both resolve at noon UTC. Both use WU as resolution source.
+ingest.py - Polymarket temperature market ingestion for all 21 approved cities.
 """
 
 import re
@@ -18,19 +12,52 @@ from data.database import get_conn, init_db
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 WU_API_KEY = "e1f10a1e78da46f5b10a1e78da96f525"
 
-# APPROVED CITIES ONLY — verified positive ROI from real backtests
-# London +81.8% | NYC +80.1% | Toronto +24.8%
 CITY_SLUGS = {
-    "London":  "london",
-    "NYC":     "nyc",
-    "Toronto": "toronto",
+    "London":       "london",
+    "NYC":          "nyc",
+    "Toronto":      "toronto",
+    "Seoul":        "seoul",
+    "Dallas":       "dallas",
+    "Atlanta":      "atlanta",
+    "Miami":        "miami",
+    "Seattle":      "seattle",
+    "Paris":        "paris",
+    "Tokyo":        "tokyo",
+    "Singapore":    "singapore",
+    "Madrid":       "madrid",
+    "Warsaw":       "warsaw",
+    "Beijing":      "beijing",
+    "Shanghai":     "shanghai",
+    "Taipei":       "taipei",
+    "Tel Aviv":     "tel-aviv",
+    "Sao Paulo":    "sao-paulo",
+    "Milan":        "milan",
+    "Munich":       "munich",
+    "Buenos Aires": "buenos-aires",
 }
 
-# WU stations for resolution verification
 WU_STATIONS = {
-    "London":  {"station": "EGLC", "country": "GB", "unit": "C"},
-    "NYC":     {"station": "KLGA", "country": "US", "unit": "F"},
-    "Toronto": {"station": "CYYZ", "country": "CA", "unit": "C"},
+    "London":       {"station": "EGLC", "country": "GB", "unit": "C"},
+    "NYC":          {"station": "KLGA", "country": "US", "unit": "F"},
+    "Toronto":      {"station": "CYYZ", "country": "CA", "unit": "C"},
+    "Seoul":        {"station": "RKSI", "country": "KR", "unit": "C"},
+    "Dallas":       {"station": "KDAL", "country": "US", "unit": "F"},
+    "Atlanta":      {"station": "KATL", "country": "US", "unit": "F"},
+    "Miami":        {"station": "KMIA", "country": "US", "unit": "F"},
+    "Seattle":      {"station": "KSEA", "country": "US", "unit": "F"},
+    "Paris":        {"station": "LFPG", "country": "FR", "unit": "C"},
+    "Tokyo":        {"station": "RJTT", "country": "JP", "unit": "C"},
+    "Singapore":    {"station": "WSSS", "country": "SG", "unit": "C"},
+    "Madrid":       {"station": "LEMD", "country": "ES", "unit": "C"},
+    "Warsaw":       {"station": "EPWA", "country": "PL", "unit": "C"},
+    "Beijing":      {"station": "ZBAA", "country": "CN", "unit": "C"},
+    "Shanghai":     {"station": "ZSPD", "country": "CN", "unit": "C"},
+    "Taipei":       {"station": "RCTP", "country": "TW", "unit": "C"},
+    "Tel Aviv":     {"station": "LLBG", "country": "IL", "unit": "C"},
+    "Sao Paulo":    {"station": "SBGR", "country": "BR", "unit": "C"},
+    "Milan":        {"station": "LIMC", "country": "IT", "unit": "C"},
+    "Munich":       {"station": "EDDM", "country": "DE", "unit": "C"},
+    "Buenos Aires": {"station": "SAEZ", "country": "AR", "unit": "C"},
 }
 
 
@@ -60,43 +87,28 @@ def make_slug(city_slug, target_date):
 
 
 def parse_group_title(title):
-    """
-    Parse groupItemTitle for both °F and °C markets.
-
-    Chicago (°F):
-      "33°F or below"  → below,  target_high=33
-      "34-35°F"        → range,  target_low=34, target_high=35
-      "52°F or higher" → above,  target_low=52
-
-    London (°C):
-      "9°C or below"   → below,  target_high=9
-      "12°C"           → exact,  target_low=12, target_high=12
-      "19°C or higher" → above,  target_low=19
-    """
-    t = title.strip().lower()
-
-    # Detect unit
+    t    = title.strip().lower()
     unit = "C" if "°c" in t else "F"
 
-    # "or below" / "or lower" (handles negative: "-5°c or below")
+    # "or below" / "or lower" (handles negatives)
     m = re.match(r'^(-?\d+(?:\.\d+)?)\s*°?[fc]?\s+or\s+(?:below|lower)$', t)
     if m:
         return {"market_type": "below", "unit": unit,
                 "target_low": -9999, "target_high": float(m.group(1))}
 
-    # "or higher" / "or above" (handles negative)
+    # "or higher" / "or above"
     m = re.match(r'^(-?\d+(?:\.\d+)?)\s*°?[fc]?\s+or\s+(?:higher|above)$', t)
     if m:
         return {"market_type": "above", "unit": unit,
                 "target_low": float(m.group(1)), "target_high": 9999}
 
-    # "34-35°f" range (Chicago/NYC)
+    # "34-35°f" range
     m = re.match(r'^(-?\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)\s*°?[fc]?$', t)
     if m:
         return {"market_type": "range", "unit": unit,
                 "target_low": float(m.group(1)), "target_high": float(m.group(2))}
 
-    # "-4°c" or "12°c" exact (London/Seoul/Toronto/Buenos Aires)
+    # "-4°c" or "12°c" exact
     m = re.match(r'^(-?\d+(?:\.\d+)?)\s*°[fc]$', t)
     if m:
         val = float(m.group(1))
@@ -107,9 +119,8 @@ def parse_group_title(title):
 
 
 def fetch_event(city, city_slug, target_date):
-    slug    = make_slug(city_slug, target_date)
-    data    = safe_get(f"{GAMMA_BASE}/events", params={"slug": slug})
-    unit    = WU_STATIONS[city]["unit"]
+    slug = make_slug(city_slug, target_date)
+    data = safe_get(f"{GAMMA_BASE}/events", params={"slug": slug})
 
     if not data or not isinstance(data, list) or len(data) == 0:
         return []
@@ -121,7 +132,6 @@ def fetch_event(city, city_slug, target_date):
         title  = m.get("groupItemTitle", "")
         parsed = parse_group_title(title)
         if not parsed:
-            print(f"  [SKIP] Cannot parse: '{title}'")
             continue
 
         prices = m.get("outcomePrices", "[]")
@@ -227,17 +237,11 @@ def fetch_polymarket_markets(days_ahead=7, days_back=30):
 
         print(f"  {city}: {city_count} markets upserted")
 
-    print(f"[POLY] Done: {saved} total upserts\n")
+    print(f"[POLY] Done: {saved} total\n")
     return saved
 
 
 def fetch_wu_temps(days_back=30):
-    """
-    Fetch WU historical temps.
-    US cities: uses imperial units (°F)
-    International cities: uses metric units (°C) stored in max_temp_f column
-    Note: for London we store °C in max_temp_f — signals.py knows to use it as °C
-    """
     end_date   = date.today()
     start_date = end_date - timedelta(days=days_back)
     saved      = 0
@@ -247,7 +251,7 @@ def fetch_wu_temps(days_back=30):
     for city, info in WU_STATIONS.items():
         station  = info["station"]
         country  = info["country"]
-        unit_sys = "e" if info["unit"] == "F" else "m"  # e=imperial, m=metric
+        unit_sys = "e" if info["unit"] == "F" else "m"
         current    = start_date
         city_saved = 0
 
@@ -257,8 +261,8 @@ def fetch_wu_temps(days_back=30):
 
             conn = get_conn()
             c    = conn.cursor()
-            c.execute("SELECT COUNT(*) as count FROM wu_temps "
-                      "WHERE city=%s AND date=%s", (city, date_str))
+            c.execute("SELECT COUNT(*) as count FROM wu_temps WHERE city=%s AND date=%s",
+                      (city, date_str))
             row = c.fetchone()
             conn.close()
 
@@ -266,7 +270,6 @@ def fetch_wu_temps(days_back=30):
                 current += timedelta(days=1)
                 continue
 
-            # Build WU URL — international stations use country code
             if country == "US":
                 wu_url = f"https://api.weather.com/v1/location/{station}:9:US/observations/historical.json"
             else:
@@ -274,8 +277,7 @@ def fetch_wu_temps(days_back=30):
 
             try:
                 r = requests.get(wu_url,
-                    params={"apiKey": WU_API_KEY, "units": unit_sys,
-                            "startDate": date_fmt},
+                    params={"apiKey": WU_API_KEY, "units": unit_sys, "startDate": date_fmt},
                     timeout=15)
             except Exception as e:
                 print(f"  [WU ERR] {city} {date_str}: {e}")
@@ -299,10 +301,8 @@ def fetch_wu_temps(days_back=30):
                     city_saved += 1
                     saved += 1
             elif r.status_code == 401:
-                print(f"  [WU] 401 Unauthorized")
+                print(f"  [WU] 401 — check API key")
                 break
-            else:
-                print(f"  [WU] HTTP {r.status_code} for {city} {date_str}")
 
             current += timedelta(days=1)
             time.sleep(0.4)
@@ -314,16 +314,13 @@ def fetch_wu_temps(days_back=30):
 
 
 def fetch_price_histories():
-    """Pull CLOB price history for all resolved markets."""
     conn = get_conn()
     c    = conn.cursor()
-    c.execute("""SELECT id FROM markets
-                 WHERE outcome IS NOT NULL
-                 ORDER BY resolved_at DESC""")
+    c.execute("SELECT id FROM markets WHERE outcome IS NOT NULL ORDER BY resolved_at DESC")
     market_ids = [r["id"] for r in c.fetchall()]
     conn.close()
 
-    print(f"[PRICES] Fetching price histories for {len(market_ids)} markets...")
+    print(f"[PRICES] Fetching histories for {len(market_ids)} markets...")
     saved = 0
 
     for i, mid in enumerate(market_ids):
@@ -353,7 +350,7 @@ def fetch_price_histories():
         if not hist or "history" not in hist:
             continue
 
-        price_rows = [(mid, int(p["t"]), float(p["p"]))
+        price_rows = [(mid, int(p["t"]), float(p["p"]), round(1 - float(p["p"]), 4))
                       for p in hist["history"] if p.get("t") and p.get("p") is not None]
 
         if price_rows:
@@ -362,12 +359,11 @@ def fetch_price_histories():
             cur.executemany(
                 "INSERT INTO price_snapshots (market_id, timestamp, yes_price, no_price) "
                 "VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-                [(r[0], r[1], r[2], round(1 - r[2], 4)) for r in price_rows])
+                price_rows)
             conn.commit()
             conn.close()
             saved += len(price_rows)
 
-            # Update last_trade_price with price 29h before resolution
             conn = get_conn()
             c    = conn.cursor()
             c.execute("SELECT resolved_at FROM markets WHERE id=%s", (mid,))
@@ -390,7 +386,7 @@ def fetch_price_histories():
                 conn.close()
 
         if i % 20 == 0:
-            print(f"  [{i}/{len(market_ids)}] {saved} snapshots saved")
+            print(f"  [{i}/{len(market_ids)}] {saved} snapshots")
         time.sleep(0.3)
 
     print(f"[PRICES] Done: {saved} snapshots")
@@ -400,7 +396,8 @@ def fetch_price_histories():
 def run_full_ingest(days_back=30, days_ahead=7):
     init_db()
     print(f"\n{'='*55}")
-    print(f"  POLYEDGE INGEST — {days_back} days back, {days_ahead} ahead")
+    print(f"  POLYEDGE INGEST — {len(CITY_SLUGS)} cities")
+    print(f"  {days_back} days back, {days_ahead} days ahead")
     print(f"{'='*55}\n")
 
     fetch_polymarket_markets(days_ahead=days_ahead, days_back=days_back)
@@ -413,12 +410,12 @@ def run_full_ingest(days_back=30, days_ahead=7):
     for table in ["markets", "wu_temps", "paper_trades"]:
         c.execute(f"SELECT COUNT(*) as count FROM {table}")
         print(f"  {table:<20} {c.fetchone()['count']:>10,} rows")
-    for city in CITY_SLUGS.keys():
+    for city in list(CITY_SLUGS.keys())[:5]:
         c.execute("SELECT COUNT(*) as count FROM markets WHERE city=%s AND outcome IS NULL", (city,))
         open_c = c.fetchone()["count"]
         c.execute("SELECT COUNT(*) as count FROM markets WHERE city=%s AND outcome IS NOT NULL", (city,))
-        resolved_c = c.fetchone()["count"]
-        print(f"  {city}: {open_c} open, {resolved_c} resolved")
+        res_c  = c.fetchone()["count"]
+        print(f"  {city}: {open_c} open, {res_c} resolved")
     conn.close()
 
 
