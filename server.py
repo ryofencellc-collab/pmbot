@@ -434,10 +434,34 @@ def run_backtest_real():
 
 @app.get("/backtest/london")
 def run_backtest_london():
-    """Real backtest London using Open-Meteo forecasts. Slow but 100% real."""
+    """Real backtest London using Open-Meteo forecasts."""
     try:
         from strategy.backtest_london import run_backtest as _run
         return _run()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/backtest/cities")
+def run_backtest_cities():
+    """Real backtest NYC, Buenos Aires, Seoul, Toronto. Takes 10-20 min."""
+    try:
+        from strategy.backtest_cities import run_all_backtests
+        return run_all_backtests()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/backtest/city/{city_name}")
+def run_backtest_city(city_name: str):
+    """Real backtest for a single city. E.g. /backtest/city/Seoul"""
+    try:
+        from strategy.backtest_cities import run_city_backtest, CITY_CONFIGS
+        # Handle URL encoding
+        city = city_name.replace("-", " ").title()
+        if city not in CITY_CONFIGS:
+            return {"error": f"City '{city}' not found. Options: {list(CITY_CONFIGS.keys())}"}
+        return run_city_backtest(city)
     except Exception as e:
         return {"error": str(e)}
 
