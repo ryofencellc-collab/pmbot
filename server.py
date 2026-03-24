@@ -457,10 +457,32 @@ def run_backtest_city(city_name: str):
     """Real backtest for a single city. E.g. /backtest/city/Seoul"""
     try:
         from strategy.backtest_cities import run_city_backtest, CITY_CONFIGS
-        # Handle URL encoding
         city = city_name.replace("-", " ").title()
         if city not in CITY_CONFIGS:
             return {"error": f"City '{city}' not found. Options: {list(CITY_CONFIGS.keys())}"}
+        return run_city_backtest(city)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/backtest/all")
+def run_backtest_all():
+    """Real backtest for ALL 21 cities with YES+NO betting. Takes 30-60 min."""
+    try:
+        from strategy.backtest_all import run_all_backtests
+        return run_all_backtests()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/backtest/all/{city_name}")
+def run_backtest_all_city(city_name: str):
+    """Real backtest for a single city with YES+NO. E.g. /backtest/all/London"""
+    try:
+        from strategy.backtest_all import run_city_backtest, CITY_CONFIGS
+        city = city_name.replace("-", " ").title()
+        if city not in CITY_CONFIGS:
+            return {"error": f"City not found. Options: {list(CITY_CONFIGS.keys())}"}
         return run_city_backtest(city)
     except Exception as e:
         return {"error": str(e)}
