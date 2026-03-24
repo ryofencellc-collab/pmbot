@@ -22,10 +22,13 @@ ENTRY_HOURS_BEFORE = 29
 
 CITY_CONFIGS = {
     "NYC": {
-        "forecast_source": "noaa",
-        "noaa_url":        "https://api.weather.gov/gridpoints/OKX/33,37/forecast",
+        "forecast_source": "open_meteo",
+        "latitude":        40.7128,
+        "longitude":       -74.0060,
+        "timezone":        "America/New_York",
+        "temp_unit":       "fahrenheit",
         "unit":            "F",
-        "mean_delta":      2.0,
+        "mean_delta":      1.0,
         "std":             3.0,
     },
     "Buenos Aires": {
@@ -95,13 +98,14 @@ def safe_get(url, params=None, retries=3):
 
 def get_open_meteo_forecast(config, date_str):
     try:
+        temp_unit = config.get("temp_unit", "celsius")
         r = requests.get(
             "https://api.open-meteo.com/v1/forecast",
             params={
                 "latitude":         config["latitude"],
                 "longitude":        config["longitude"],
                 "daily":            "temperature_2m_max",
-                "temperature_unit": "celsius",
+                "temperature_unit": temp_unit,
                 "timezone":         config["timezone"],
                 "start_date":       date_str,
                 "end_date":         date_str,
