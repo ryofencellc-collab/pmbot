@@ -424,14 +424,20 @@ def run_backtest():
 
 @app.get("/backtest/real")
 def run_backtest_real():
-    """
-    Real backtest using actual GFS MOS historical forecasts from IEM.
-    Slow (5-10 min) but 100% real data — no simulation.
-    """
+    """Real backtest Chicago using GFS MOS forecasts. Slow but 100% real."""
     try:
         from strategy.backtest_real import run_backtest as _run
-        result = _run()
-        return result
+        return _run()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/backtest/london")
+def run_backtest_london():
+    """Real backtest London using Open-Meteo forecasts. Slow but 100% real."""
+    try:
+        from strategy.backtest_london import run_backtest as _run
+        return _run()
     except Exception as e:
         return {"error": str(e)}
 
