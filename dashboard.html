@@ -118,12 +118,37 @@ body { background: #0a0a0f; color: #e8e8f0; font-family: -apple-system, BlinkMac
 <script>
 const API = '';
 
-// Clock
+// Clock in EST
+function getESTTime(date) {
+  return date.toLocaleString('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true
+  }) + ' EST';
+}
+function getESTDateTime(date) {
+  return date.toLocaleString('en-US', {
+    timeZone: 'America/New_York',
+    month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: true
+  }) + ' EST';
+}
 setInterval(() => {
-  const n = new Date();
-  document.getElementById('clock').textContent =
-    n.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+  document.getElementById('clock').textContent = getESTTime(new Date());
 }, 1000);
+
+// Auto-refresh when switching back to this tab
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    loadStatus();
+    const active = document.querySelector('.page.on');
+    if (active) {
+      if (active.id==='signals')     loadSig();
+      if (active.id==='trades')      loadTrades();
+      if (active.id==='performance') loadPerf();
+      if (active.id==='system')      loadLogs();
+    }
+  }
+});
 
 // Tab switching
 function go(name, el) {
@@ -197,13 +222,14 @@ async function loadTrades() {
       const cls = t.outcome==='Yes'?'win-text':t.outcome==='No'?'loss-text':'pend-text';
       const icon = t.outcome==='Yes'?'✅':t.outcome==='No'?'❌':'⏳';
       const pnl = t.pnl!=null ? (t.pnl>=0?'+$'+t.pnl.toFixed(2):'-$'+Math.abs(t.pnl).toFixed(2)) : 'Pending';
+      const resolvesMsg = t.outcome ? '' : ' · Resolves tonight ~11PM-2AM EST';
       return `<div class="trade-row">
         <div class="trade-top">
           <div class="trade-name">${icon} ${t.city} — ${t.trade_date}</div>
           <div class="trade-pnl ${cls}">${pnl}</div>
         </div>
         <div class="trade-sub">${t.question}</div>
-        <div class="trade-sub">Entry: ${(t.entry_price*100).toFixed(1)}¢ · Size: $${t.size?.toFixed(2)} · Forecast: ${t.noaa_forecast_f}°F · Range: ${t.predicted_range}</div>
+        <div class="trade-sub">Entry: ${(t.entry_price*100).toFixed(1)}¢ · Size: $${t.size?.toFixed(2)} · Forecast: ${t.noaa_forecast_f}°F · Range: ${t.predicted_range}${resolvesMsg}</div>
       </div>`;
     }).join('');
   } catch(e) {
@@ -219,7 +245,7 @@ async function loadPerf() {
     const d = await r.json();
     document.getElementById('perfContent').innerHTML = `
       <div class="big-num">$${(d.final_capital||100).toFixed(2)}</div>
-      <div class="big-sub">Starting capital: $100.00</div>
+      <div class="big-sub">Starting capital: $10,000.00</div>
       <div class="stats-grid">
         <div class="stat-box"><div class="stat-num">${d.win_rate||0}%</div><div class="stat-lbl">Win Rate</div></div>
         <div class="stat-box"><div class="stat-num">${d.total_bets||0}</div><div class="stat-lbl">Bets</div></div>
