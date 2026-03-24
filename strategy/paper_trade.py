@@ -11,9 +11,9 @@ import requests
 from datetime import datetime, timezone
 from data.database import get_conn
 
-CAPITAL_START = 500.0  # 3 cities × 3 signals × $10 = $90/day max
-BET_SIZE      = 10.0   # Fixed $10 per signal
-MAX_BETS_DAY  = 9      # Up to 3 per city × 3 cities = 9 max
+CAPITAL_START = 10000.0  # 21 cities × up to 6 signals × $10 = $1,260/day max
+BET_SIZE      = 10.0     # Fixed $10 per signal
+MAX_BETS_DAY  = 200      # No hard limit — let signals decide
 
 
 def get_current_capital():
@@ -37,9 +37,19 @@ def get_bets_today():
 
 
 def place_paper_trade(signal, capital):
-    """Insert one paper trade. Returns trade dict."""
+    """Insert one paper trade. Returns trade dict. Skips duplicates."""
     today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     size  = BET_SIZE
+
+    # Duplicate check — never bet same market twice on same day
+    conn = get_conn()
+    c    = conn.cursor()
+    c.execute("SELECT COUNT(*) as count FROM paper_trades WHERE market_id=%s AND trade_date=%s",
+              (str(signal["market_id"]), today))
+    if c.fetchone()["count"] > 0:
+        conn.close()
+        return None  # Already bet this market today
+    conn.close()
 
     conn = get_conn()
     c    = conn.cursor()
@@ -101,19 +111,15 @@ def run_morning_session():
     log.append(f"Bets placed today so far: {bets}")
     log.append("")
 
-    if bets >= MAX_BETS_DAY:
-        log.append("Max bets reached. Skipping.")
-        save_log("morning", "\n".join(log))
-        return [], "\n".join(log)
+    # No max bets limit — let all signals through
 
     signals, scan_log = scan_signals(today)
     log.append(scan_log)
     log.append("")
 
     placed = []
-    slots  = MAX_BETS_DAY - bets
 
-    for sig in signals[:slots]:
+    for sig in signals:
         trade = place_paper_trade(sig, capital)
         if trade:
             capital -= trade["size"]
