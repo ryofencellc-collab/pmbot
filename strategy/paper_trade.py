@@ -11,9 +11,9 @@ import requests
 from datetime import datetime, timezone
 from data.database import get_conn
 
-CAPITAL_START = 100.0
-BET_SIZE      = 10.0   # Fixed $10 per signal — clean and simple
-MAX_BETS_DAY  = 9      # Up to 3 per city, 1 city for now
+CAPITAL_START = 500.0  # 3 cities × 3 signals × $10 = $90/day max
+BET_SIZE      = 10.0   # Fixed $10 per signal
+MAX_BETS_DAY  = 9      # Up to 3 per city × 3 cities = 9 max
 
 
 def get_current_capital():
