@@ -21,13 +21,12 @@ from data.database import get_conn
 
 # ── City Configuration ────────────────────────────────────────────────────────
 
+# APPROVED CITIES — verified positive ROI from real backtests
+# London:  +81.8% ROI, 22.7% win rate
+# NYC:     +80.1% ROI, 31.2% win rate
+# Toronto: +24.8% ROI, 38.1% win rate
+# Chicago, Buenos Aires, Seoul: negative ROI — excluded
 CITIES = {
-    "Chicago": {
-        "forecast_source": "noaa",
-        "noaa_url":        "https://api.weather.gov/gridpoints/LOT/76,73/forecast",
-        "unit":            "F",
-        "slug":            "chicago",
-    },
     "London": {
         "forecast_source": "open_meteo",
         "latitude":        51.5074,
@@ -44,22 +43,6 @@ CITIES = {
         "unit":            "F",
         "slug":            "nyc",
         "temp_unit":       "fahrenheit",
-    },
-    "Buenos Aires": {
-        "forecast_source": "open_meteo",
-        "latitude":        -34.6037,
-        "longitude":       -58.3816,
-        "timezone":        "America/Argentina/Buenos_Aires",
-        "unit":            "C",
-        "slug":            "buenos-aires",
-    },
-    "Seoul": {
-        "forecast_source": "open_meteo",
-        "latitude":        37.5665,
-        "longitude":       126.9780,
-        "timezone":        "Asia/Seoul",
-        "unit":            "C",
-        "slug":            "seoul",
     },
     "Toronto": {
         "forecast_source": "open_meteo",
