@@ -36,6 +36,36 @@ CITIES = {
         "unit":            "C",
         "slug":            "london",
     },
+    "NYC": {
+        "forecast_source": "noaa",
+        "noaa_url":        "https://api.weather.gov/gridpoints/OKX/33,37/forecast",
+        "unit":            "F",
+        "slug":            "nyc",
+    },
+    "Buenos Aires": {
+        "forecast_source": "open_meteo",
+        "latitude":        -34.6037,
+        "longitude":       -58.3816,
+        "timezone":        "America/Argentina/Buenos_Aires",
+        "unit":            "C",
+        "slug":            "buenos-aires",
+    },
+    "Seoul": {
+        "forecast_source": "open_meteo",
+        "latitude":        37.5665,
+        "longitude":       126.9780,
+        "timezone":        "Asia/Seoul",
+        "unit":            "C",
+        "slug":            "seoul",
+    },
+    "Toronto": {
+        "forecast_source": "open_meteo",
+        "latitude":        43.6532,
+        "longitude":       -79.3832,
+        "timezone":        "America/Toronto",
+        "unit":            "C",
+        "slug":            "toronto",
+    },
 }
 
 MAX_SIGNALS_PER_CITY = 3
