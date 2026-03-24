@@ -18,24 +18,19 @@ from data.database import get_conn, init_db
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 WU_API_KEY = "e1f10a1e78da46f5b10a1e78da96f525"
 
-# Confirmed working cities with verified slugs and WU stations
+# APPROVED CITIES ONLY — verified positive ROI from real backtests
+# London +81.8% | NYC +80.1% | Toronto +24.8%
 CITY_SLUGS = {
-    "Chicago":      "chicago",
-    "London":       "london",
-    "NYC":          "nyc",
-    "Buenos Aires": "buenos-aires",
-    "Seoul":        "seoul",
-    "Toronto":      "toronto",
+    "London":  "london",
+    "NYC":     "nyc",
+    "Toronto": "toronto",
 }
 
-# WU stations — US cities use :9:US, international use country code
+# WU stations for resolution verification
 WU_STATIONS = {
-    "Chicago":      {"station": "KORD", "country": "US", "unit": "F"},
-    "London":       {"station": "EGLC", "country": "GB", "unit": "C"},
-    "NYC":          {"station": "KLGA", "country": "US", "unit": "F"},
-    "Buenos Aires": {"station": "SAEZ", "country": "AR", "unit": "C"},
-    "Seoul":        {"station": "RKSI", "country": "KR", "unit": "C"},
-    "Toronto":      {"station": "CYYZ", "country": "CA", "unit": "C"},
+    "London":  {"station": "EGLC", "country": "GB", "unit": "C"},
+    "NYC":     {"station": "KLGA", "country": "US", "unit": "F"},
+    "Toronto": {"station": "CYYZ", "country": "CA", "unit": "C"},
 }
 
 
