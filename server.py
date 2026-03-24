@@ -16,6 +16,7 @@ app = FastAPI(title="PolyEdge", version="4.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 ingest_status = {"running": False, "done": False, "result": None}
+backtest_status = {"running": False, "done": False, "result": None}
 
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
@@ -106,6 +107,24 @@ def run_scheduler():
                     print(f"[SCHEDULER] Evening error: {e}")
 
         time.sleep(30)
+
+
+def run_backtest_all_background():
+    global backtest_status
+    backtest_status["running"] = True
+    backtest_status["done"]    = False
+    backtest_status["result"]  = None
+    try:
+        from strategy.backtest_all import run_all_backtests
+        result = run_all_backtests()
+        backtest_status["result"] = result
+        print(f"[BACKTEST] Done")
+    except Exception as e:
+        backtest_status["result"] = {"error": str(e)}
+        print(f"[BACKTEST] Error: {e}")
+    finally:
+        backtest_status["running"] = False
+        backtest_status["done"]    = True
 
 
 def run_ingest_background():
@@ -467,12 +486,18 @@ def run_backtest_city(city_name: str):
 
 @app.get("/backtest/all")
 def run_backtest_all():
-    """Real backtest for ALL 21 cities with YES+NO betting. Takes 30-60 min."""
-    try:
-        from strategy.backtest_all import run_all_backtests
-        return run_all_backtests()
-    except Exception as e:
-        return {"error": str(e)}
+    """Start full backtest in background. Check /backtest/all/status for results."""
+    global backtest_status
+    if backtest_status["running"]:
+        return {"status": "already_running", "message": "Check /backtest/all/status"}
+    threading.Thread(target=run_backtest_all_background, daemon=True).start()
+    return {"status": "started", "message": "Backtest running in background. Check /backtest/all/status for results."}
+
+
+@app.get("/backtest/all/status")
+def backtest_all_status():
+    """Check backtest progress and results."""
+    return backtest_status
 
 
 @app.get("/backtest/all/{city_name}")
