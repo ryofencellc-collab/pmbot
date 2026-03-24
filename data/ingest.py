@@ -20,14 +20,22 @@ WU_API_KEY = "e1f10a1e78da46f5b10a1e78da96f525"
 
 # Confirmed working cities with verified slugs and WU stations
 CITY_SLUGS = {
-    "Chicago": "chicago",
-    "London":  "london",
+    "Chicago":      "chicago",
+    "London":       "london",
+    "NYC":          "nyc",
+    "Buenos Aires": "buenos-aires",
+    "Seoul":        "seoul",
+    "Toronto":      "toronto",
 }
 
 # WU stations — US cities use :9:US, international use country code
 WU_STATIONS = {
-    "Chicago": {"station": "KORD",  "country": "US",  "unit": "F"},
-    "London":  {"station": "EGLC",  "country": "GB",  "unit": "C"},
+    "Chicago":      {"station": "KORD", "country": "US", "unit": "F"},
+    "London":       {"station": "EGLC", "country": "GB", "unit": "C"},
+    "NYC":          {"station": "KLGA", "country": "US", "unit": "F"},
+    "Buenos Aires": {"station": "SAEZ", "country": "AR", "unit": "C"},
+    "Seoul":        {"station": "RKSI", "country": "KR", "unit": "C"},
+    "Toronto":      {"station": "CYYZ", "country": "CA", "unit": "C"},
 }
 
 
@@ -75,26 +83,26 @@ def parse_group_title(title):
     # Detect unit
     unit = "C" if "°c" in t else "F"
 
-    # "or below" / "or lower"
-    m = re.match(r'^(\d+(?:\.\d+)?)\s*°?[fc]?\s+or\s+(?:below|lower)$', t)
+    # "or below" / "or lower" (handles negative: "-5°c or below")
+    m = re.match(r'^(-?\d+(?:\.\d+)?)\s*°?[fc]?\s+or\s+(?:below|lower)$', t)
     if m:
         return {"market_type": "below", "unit": unit,
                 "target_low": -9999, "target_high": float(m.group(1))}
 
-    # "or higher" / "or above"
-    m = re.match(r'^(\d+(?:\.\d+)?)\s*°?[fc]?\s+or\s+(?:higher|above)$', t)
+    # "or higher" / "or above" (handles negative)
+    m = re.match(r'^(-?\d+(?:\.\d+)?)\s*°?[fc]?\s+or\s+(?:higher|above)$', t)
     if m:
         return {"market_type": "above", "unit": unit,
                 "target_low": float(m.group(1)), "target_high": 9999}
 
-    # "34-35°f" range (Chicago only)
-    m = re.match(r'^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)\s*°?[fc]?$', t)
+    # "34-35°f" range (Chicago/NYC)
+    m = re.match(r'^(-?\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)\s*°?[fc]?$', t)
     if m:
         return {"market_type": "range", "unit": unit,
                 "target_low": float(m.group(1)), "target_high": float(m.group(2))}
 
-    # "12°c" exact (London)
-    m = re.match(r'^(\d+(?:\.\d+)?)\s*°[fc]$', t)
+    # "-4°c" or "12°c" exact (London/Seoul/Toronto/Buenos Aires)
+    m = re.match(r'^(-?\d+(?:\.\d+)?)\s*°[fc]$', t)
     if m:
         val = float(m.group(1))
         return {"market_type": "exact", "unit": unit,
