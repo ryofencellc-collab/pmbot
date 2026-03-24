@@ -480,9 +480,20 @@ def run_backtest_all_city(city_name: str):
     """Real backtest for a single city with YES+NO. E.g. /backtest/all/London"""
     try:
         from strategy.backtest_all import run_city_backtest, CITY_CONFIGS
+        # Handle various formats: "tel-aviv" -> "Tel Aviv", "sao-paulo" -> "Sao Paulo"
         city = city_name.replace("-", " ").title()
+        # Fix special cases
+        city = city.replace("Tel Aviv", "Tel Aviv")
+        city = city.replace("Sao Paulo", "Sao Paulo")
+        city = city.replace("Buenos Aires", "Buenos Aires")
         if city not in CITY_CONFIGS:
-            return {"error": f"City not found. Options: {list(CITY_CONFIGS.keys())}"}
+            # Try partial match
+            matches = [c for c in CITY_CONFIGS.keys() 
+                      if city.lower() in c.lower() or c.lower() in city.lower()]
+            if len(matches) == 1:
+                city = matches[0]
+            else:
+                return {"error": f"City not found. Options: {list(CITY_CONFIGS.keys())}"}
         return run_city_backtest(city)
     except Exception as e:
         return {"error": str(e)}
