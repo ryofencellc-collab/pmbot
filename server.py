@@ -554,18 +554,26 @@ def test_honda():
             first_price = history[0][1] if history else None
             min_price = min(p for t, p in history) if history else None
 
+            # Debug timestamp comparison
+            first_snap_ts = history[0][0] if history else None
+            last_snap_ts  = history[-1][0] if history else None
+
             results.append({
-                "market_id":   m["id"],
-                "city":        m["city"],
-                "question":    m["question"][:60] if m["question"] else "",
-                "outcome":     m["outcome"],
-                "snapshots":   len(history),
-                "first_price": first_price,
+                "market_id":         m["id"],
+                "city":              m["city"],
+                "question":          m["question"][:60] if m["question"] else "",
+                "outcome":           m["outcome"],
+                "snapshots":         len(history),
+                "resolved_at":       resolved_at,
+                "first_snap_ts":     first_snap_ts,
+                "last_snap_ts":      last_snap_ts,
+                "ts_before_res":     len(pre_res),
+                "first_price":       first_price,
                 "last_pre_res_price": last_price,
-                "min_price":   min_price,
-                "arb_candidate": last_price is not None and last_price >= 0.95,
-                "spec_candidate": first_price is not None and first_price <= 0.05,
-                "mm_candidate":  min_price is not None and min_price <= 0.20,
+                "min_price":         min_price,
+                "arb_candidate":     last_price is not None and last_price >= 0.95,
+                "spec_candidate":    first_price is not None and first_price <= 0.05,
+                "mm_candidate":      min_price is not None and min_price <= 0.20,
             })
 
         conn.close()
