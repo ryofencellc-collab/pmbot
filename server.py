@@ -530,15 +530,25 @@ def test_honda():
         conn = get_conn()
         c = conn.cursor()
 
-        # Get 5 resolved markets that have snapshots
+        # Get 3 Yes outcomes + 3 No outcomes with snapshots
         c.execute("""
             SELECT m.id, m.question, m.city, m.outcome, m.resolved_at, m.created_at
             FROM markets m
-            WHERE m.outcome IS NOT NULL
+            WHERE m.outcome = 'Yes'
             AND EXISTS (SELECT 1 FROM price_snapshots p WHERE p.market_id = m.id)
-            LIMIT 5
+            LIMIT 3
         """)
-        markets = [dict(r) for r in c.fetchall()]
+        yes_markets = [dict(r) for r in c.fetchall()]
+
+        c.execute("""
+            SELECT m.id, m.question, m.city, m.outcome, m.resolved_at, m.created_at
+            FROM markets m
+            WHERE m.outcome = 'No'
+            AND EXISTS (SELECT 1 FROM price_snapshots p WHERE p.market_id = m.id)
+            LIMIT 3
+        """)
+        no_markets = [dict(r) for r in c.fetchall()]
+        markets = yes_markets + no_markets
 
         results = []
         for m in markets:
