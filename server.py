@@ -70,6 +70,13 @@ def run_scheduler():
                     from strategy.paper_trade import run_morning_session
                     trades, log = run_morning_session()
                     print(f"[SCHEDULER] Morning done. {len(trades)} trades placed.")
+                    # Early entry trades (Honda strategy)
+                    try:
+                        from strategy.early_entry import place_early_trades
+                        early = place_early_trades()
+                        print(f"[EARLY] {early['trades']} early entry trades placed.")
+                    except Exception as e2:
+                        print(f"[EARLY] Error: {e2}")
                 except Exception as e:
                     print(f"[SCHEDULER] Morning error: {e}")
 
@@ -521,6 +528,30 @@ def run_honda_background():
     finally:
         honda_status["running"] = False
         honda_status["done"]    = True
+
+
+@app.get("/early-signals")
+def early_signals():
+    """Get early entry signals — cheap ranges 2-7 days before resolution."""
+    try:
+        from strategy.early_entry import get_early_signals
+        signals, log = get_early_signals()
+        return {"signals": signals, "count": len(signals), "log": log, "date": str(__import__("datetime").date.today())}
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "trace": traceback.format_exc()}
+
+
+@app.get("/morning/early")
+def run_early_trades():
+    """Place early entry paper trades manually."""
+    try:
+        from strategy.early_entry import place_early_trades
+        result = place_early_trades()
+        return result
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "trace": traceback.format_exc()}
 
 
 @app.get("/backtest/honda/test")
