@@ -539,6 +539,60 @@ def honda_backtest_status():
     return honda_status
 
 
+@app.get("/debug/db")
+def debug_db():
+    """Check what's actually in the DB."""
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+
+        c.execute("SELECT COUNT(*) FROM markets")
+        total = c.fetchone()[0]
+
+        c.execute("SELECT COUNT(*) FROM markets WHERE outcome IS NOT NULL")
+        resolved = c.fetchone()[0]
+
+        c.execute("SELECT COUNT(*) FROM markets WHERE outcome IS NOT NULL AND last_trade_price > 0")
+        resolved_with_price = c.fetchone()[0]
+
+        c.execute("SELECT COUNT(*) FROM markets WHERE outcome='Yes'")
+        yes = c.fetchone()[0]
+
+        c.execute("SELECT COUNT(*) FROM markets WHERE outcome='No'")
+        no = c.fetchone()[0]
+
+        c.execute("SELECT COUNT(*) FROM price_snapshots")
+        snapshots = c.fetchone()[0]
+
+        c.execute("SELECT COUNT(DISTINCT market_id) FROM price_snapshots")
+        markets_with_snapshots = c.fetchone()[0]
+
+        c.execute("""SELECT city, COUNT(*) as total,
+                    SUM(CASE WHEN outcome IS NOT NULL THEN 1 ELSE 0 END) as resolved,
+                    SUM(CASE WHEN last_trade_price > 0 THEN 1 ELSE 0 END) as has_price
+                    FROM markets GROUP BY city ORDER BY total DESC LIMIT 10""")
+        by_city = [dict(r) for r in c.fetchall()]
+
+        c.execute("""SELECT market_id, COUNT(*) as snaps
+                    FROM price_snapshots GROUP BY market_id LIMIT 5""")
+        sample_snaps = [dict(r) for r in c.fetchall()]
+
+        conn.close()
+        return {
+            "total_markets": total,
+            "resolved": resolved,
+            "resolved_with_price": resolved_with_price,
+            "yes": yes,
+            "no": no,
+            "price_snapshots": snapshots,
+            "markets_with_snapshots": markets_with_snapshots,
+            "by_city": by_city,
+            "sample_snapshot_market_ids": sample_snaps,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/backtest/all/{city_name}")
 def run_backtest_all_city(city_name: str):
     """Real backtest for a single city with YES+NO. E.g. /backtest/all/London"""
