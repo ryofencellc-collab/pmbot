@@ -132,21 +132,15 @@ def backtest_arbitrage(markets, capital):
         if not history or len(history) < 2:
             continue
 
-        # Filter to PRE-resolution snapshots only
-        # The last snapshot is post-resolution (1.0 or 0.0)
-        # We want prices from the live trading period
-        if resolved_at:
-            pre_res = [(t, p) for t, p in history if t < resolved_at]
-        else:
-            # No resolved_at — exclude last 2 snapshots (post-resolution)
-            pre_res = history[:-2]
+        # Filter to live trading prices only
+        # Post-resolution: Yes outcome settles at 0.999+, No outcome at 0.001-
+        # Exclude these — we only want prices during active trading
+        pre_res = [(t, p) for t, p in history if 0.001 < p < 0.999]
 
         if not pre_res:
             continue
 
-        # HondaCivic buys NO on ranges priced >= 95¢ during trading
-        # Peak price = when market was most confident (close to resolution)
-        # This is the price he would have bought NO at
+        # Peak price during live trading = when market was most confident
         peak_yes_price = max(p for t, p in pre_res)
 
         if peak_yes_price < CONFIG["arb_min_yes_price"]:
@@ -254,16 +248,13 @@ def backtest_speculation(markets, capital):
         if not history:
             continue
 
-        # Entry: minimum price in PRE-resolution snapshots
-        if resolved_at:
-            pre_res = [(t, p) for t, p in history if t < resolved_at]
-        else:
-            pre_res = history[:-2] if len(history) > 2 else history
+        # Entry: minimum price during live trading (exclude post-resolution)
+        pre_res = [(t, p) for t, p in history if 0.001 < p < 0.999]
 
         if not pre_res:
             continue
 
-        entry_price = min(p for t, p in pre_res) if pre_res else None
+        entry_price = min(p for t, p in pre_res)
 
         if not entry_price or entry_price > CONFIG["spec_max_entry"]:
             continue
@@ -362,16 +353,13 @@ def backtest_market_making(markets, capital):
         if len(history) < 5:
             continue
 
-        # Use pre-resolution prices only
-        if resolved_at:
-            pre_res = [(t, p) for t, p in history if t < resolved_at]
-        else:
-            pre_res = history[:-2] if len(history) > 2 else history
+        # Use live trading prices only (exclude post-resolution 0.001/0.999)
+        pre_res = [(t, p) for t, p in history if 0.001 < p < 0.999]
 
         if not pre_res:
             continue
 
-        # Entry: minimum price in pre-resolution window
+        # Entry: minimum price during live trading
         entry_price = min(p for t, p in pre_res)
         if not entry_price or entry_price <= 0 or entry_price > CONFIG["mm_max_entry"]:
             continue
