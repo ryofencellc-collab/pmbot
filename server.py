@@ -500,6 +500,45 @@ def backtest_all_status():
     return backtest_status
 
 
+# ── Honda Civic Strategy Backtest ─────────────────────────────────────────────
+
+honda_status = {"running": False, "done": False, "result": None}
+
+
+def run_honda_background():
+    global honda_status
+    honda_status["running"] = True
+    honda_status["done"]    = False
+    honda_status["result"]  = None
+    try:
+        from strategy.backtest_honda import run_honda_backtest
+        result = run_honda_backtest()
+        honda_status["result"] = result
+        print(f"[HONDA] Done")
+    except Exception as e:
+        honda_status["result"] = {"error": str(e)}
+        print(f"[HONDA] Error: {e}")
+    finally:
+        honda_status["running"] = False
+        honda_status["done"]    = True
+
+
+@app.get("/backtest/honda")
+def run_honda():
+    """Start Honda Civic full strategy backtest in background."""
+    global honda_status
+    if honda_status["running"]:
+        return {"status": "already_running", "message": "Check /backtest/honda/status"}
+    threading.Thread(target=run_honda_background, daemon=True).start()
+    return {"status": "started", "message": "Honda backtest running. Check /backtest/honda/status"}
+
+
+@app.get("/backtest/honda/status")
+def honda_backtest_status():
+    """Check Honda backtest progress and results."""
+    return honda_status
+
+
 @app.get("/backtest/all/{city_name}")
 def run_backtest_all_city(city_name: str):
     """Real backtest for a single city with YES+NO. E.g. /backtest/all/London"""
