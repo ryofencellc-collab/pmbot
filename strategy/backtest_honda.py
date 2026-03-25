@@ -124,44 +124,49 @@ def backtest_arbitrage(markets, capital):
         if m.get("outcome") is None:
             continue
 
-        market_id = m["id"]
-        outcome   = m["outcome"]
-        history   = m.get("price_history", [])
+        market_id   = m["id"]
+        outcome     = m["outcome"]
+        history     = m.get("price_history", [])
+        resolved_at = m.get("resolved_at", 0)
 
-        if not history:
+        if not history or len(history) < 2:
             continue
 
-        # HondaCivic's arbitrage: buy NO on ranges where YES is priced
-        # near 100¢ but the range will NOT win.
-        # These are ranges the crowd is CERTAIN about — but they still
-        # lose (only one range wins per day per city).
-        #
-        # Strategy: find the LAST price snapshot (closest to resolution)
-        # If YES price >= 95¢, buy NO at (1 - yes_price)
-        # We WIN when outcome = "No" (crowd was right about it losing)
-        # We LOSE when outcome = "Yes" (the range actually won)
+        # Filter to PRE-resolution snapshots only
+        # The last snapshot is post-resolution (1.0 or 0.0)
+        # We want prices from the live trading period
+        if resolved_at:
+            pre_res = [(t, p) for t, p in history if t < resolved_at]
+        else:
+            # No resolved_at — exclude last 2 snapshots (post-resolution)
+            pre_res = history[:-2]
 
-        last_yes_price = history[-1][1]  # last snapshot price
-
-        # Only bet NO when yes is priced >= 95¢
-        if last_yes_price < CONFIG["arb_min_yes_price"]:
+        if not pre_res:
             continue
 
-        # NO price = 1 - yes_price
-        no_price = round(1.0 - last_yes_price, 4)
+        # HondaCivic buys NO on ranges priced >= 95¢ during trading
+        # Peak price = when market was most confident (close to resolution)
+        # This is the price he would have bought NO at
+        peak_yes_price = max(p for t, p in pre_res)
+
+        if peak_yes_price < CONFIG["arb_min_yes_price"]:
+            continue
+
+        # NO price at that moment
+        no_price = round(1.0 - peak_yes_price, 4)
         if no_price <= 0:
             no_price = 0.001
 
         bet_size = CONFIG["bet_size"]
         shares   = bet_size / no_price
 
-        # We win when outcome is "No" — the range lost as expected
+        # WIN: outcome is "No" — range lost as expected
+        # LOSE: outcome is "Yes" — range actually won, we lose our NO bet
         if outcome == "No":
             payout = shares * 1.0
             pnl    = payout - bet_size
             wins  += 1
         else:
-            # outcome is "Yes" — this range actually won, we lose
             pnl    = -bet_size
             losses += 1
 
@@ -169,17 +174,17 @@ def backtest_arbitrage(markets, capital):
         capital   += pnl
 
         trades.append({
-            "market_id":     market_id,
-            "question":      m.get("question", "")[:70],
-            "city":          m.get("city", ""),
-            "yes_price":     last_yes_price,
-            "no_price":      no_price,
-            "bet_size":      bet_size,
-            "shares":        round(shares, 1),
-            "outcome":       outcome,
-            "won":           outcome == "No",
-            "pnl":           round(pnl, 4),
-            "strategy":      "ARB_NO",
+            "market_id":       market_id,
+            "question":        m.get("question", "")[:70],
+            "city":            m.get("city", ""),
+            "peak_yes_price":  peak_yes_price,
+            "no_price":        no_price,
+            "bet_size":        bet_size,
+            "shares":          round(shares, 1),
+            "outcome":         outcome,
+            "won":             outcome == "No",
+            "pnl":             round(pnl, 4),
+            "strategy":        "ARB_NO",
         })
 
     total = wins + losses
@@ -249,9 +254,16 @@ def backtest_speculation(markets, capital):
         if not history:
             continue
 
-        # Entry: minimum price seen across all snapshots
-        # (our snapshots may have been pulled after resolution so we use global min)
-        entry_price = min(p for t, p in history) if history else None
+        # Entry: minimum price in PRE-resolution snapshots
+        if resolved_at:
+            pre_res = [(t, p) for t, p in history if t < resolved_at]
+        else:
+            pre_res = history[:-2] if len(history) > 2 else history
+
+        if not pre_res:
+            continue
+
+        entry_price = min(p for t, p in pre_res) if pre_res else None
 
         if not entry_price or entry_price > CONFIG["spec_max_entry"]:
             continue
@@ -350,18 +362,31 @@ def backtest_market_making(markets, capital):
         if len(history) < 5:
             continue
 
-        # Entry: minimum price seen (best entry point)
-        entry_price = min(p for t, p in history) if history else None
+        # Use pre-resolution prices only
+        if resolved_at:
+            pre_res = [(t, p) for t, p in history if t < resolved_at]
+        else:
+            pre_res = history[:-2] if len(history) > 2 else history
+
+        if not pre_res:
+            continue
+
+        # Entry: minimum price in pre-resolution window
+        entry_price = min(p for t, p in pre_res)
         if not entry_price or entry_price <= 0 or entry_price > CONFIG["mm_max_entry"]:
             continue
 
-        entry_ts = next(t for t, p in history if p == entry_price)
+        entry_ts = next(t for t, p in pre_res if p == entry_price)
 
-        # Exit: maximum price seen after entry
-        after_entry = [(t, p) for t, p in history if t >= entry_ts]
-        max_after = max(p for t, p in after_entry) if after_entry else 0
-        exit_price = max_after if max_after >= CONFIG["mm_min_exit"] else None
-        exit_ts    = next((t for t, p in after_entry if p == max_after), None) if exit_price else None
+        # Exit: first price >= 80¢ after entry
+        after_entry = [(t, p) for t, p in pre_res if t >= entry_ts]
+        exit_price  = None
+        exit_ts     = None
+        for t, p in after_entry:
+            if p >= CONFIG["mm_min_exit"]:
+                exit_price = p
+                exit_ts    = t
+                break
 
         bet_size = CONFIG["bet_size"]
         shares   = bet_size / entry_price
