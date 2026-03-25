@@ -131,29 +131,37 @@ def backtest_arbitrage(markets, capital):
         if not history:
             continue
 
-        # Use the HIGHEST price seen in snapshots — this represents when
-        # the market was most confident about a range (near resolution)
-        # HondaCivic buys NO when YES is priced at 95-100¢
-        max_yes_price = max(p for t, p in history)
+        # HondaCivic's arbitrage: buy NO on ranges where YES is priced
+        # near 100¢ but the range will NOT win.
+        # These are ranges the crowd is CERTAIN about — but they still
+        # lose (only one range wins per day per city).
+        #
+        # Strategy: find the LAST price snapshot (closest to resolution)
+        # If YES price >= 95¢, buy NO at (1 - yes_price)
+        # We WIN when outcome = "No" (crowd was right about it losing)
+        # We LOSE when outcome = "Yes" (the range actually won)
 
-        # Only bet NO when yes was ever priced >= 95¢
-        if max_yes_price < CONFIG["arb_min_yes_price"]:
+        last_yes_price = history[-1][1]  # last snapshot price
+
+        # Only bet NO when yes is priced >= 95¢
+        if last_yes_price < CONFIG["arb_min_yes_price"]:
             continue
 
-        # Entry: buy NO at the peak price moment
-        # no_price = 1 - yes_price at that moment
-        no_price = round(1.0 - max_yes_price, 4)
-        if no_price <= 0.001:
-            no_price = 0.001  # minimum 0.1¢
+        # NO price = 1 - yes_price
+        no_price = round(1.0 - last_yes_price, 4)
+        if no_price <= 0:
+            no_price = 0.001
 
         bet_size = CONFIG["bet_size"]
         shares   = bet_size / no_price
 
+        # We win when outcome is "No" — the range lost as expected
         if outcome == "No":
             payout = shares * 1.0
             pnl    = payout - bet_size
             wins  += 1
         else:
+            # outcome is "Yes" — this range actually won, we lose
             pnl    = -bet_size
             losses += 1
 
@@ -164,7 +172,7 @@ def backtest_arbitrage(markets, capital):
             "market_id":     market_id,
             "question":      m.get("question", "")[:70],
             "city":          m.get("city", ""),
-            "yes_price":     max_yes_price,
+            "yes_price":     last_yes_price,
             "no_price":      no_price,
             "bet_size":      bet_size,
             "shares":        round(shares, 1),
