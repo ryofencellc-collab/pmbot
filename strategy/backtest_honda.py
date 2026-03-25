@@ -124,9 +124,18 @@ def backtest_arbitrage(markets, capital):
         if m.get("outcome") is None:
             continue
 
-        market_id = m["id"]
-        outcome   = m["outcome"]  # "Yes" or "No"
-        yes_price = m.get("last_trade_price", 0)
+        market_id   = m["id"]
+        outcome     = m["outcome"]  # "Yes" or "No"
+        resolved_at = m.get("resolved_at", 0)
+        history     = m.get("price_history", [])
+
+        # Use last snapshot price BEFORE resolution (not post-resolution 1.0/0.0)
+        if history and resolved_at:
+            # Get price from snapshots taken before resolution
+            pre_res = [(t, p) for t, p in history if t < resolved_at]
+            yes_price = pre_res[-1][1] if pre_res else 0.0
+        else:
+            yes_price = m.get("last_trade_price", 0)
 
         # Only bet NO when yes is priced >= 95¢
         if yes_price < CONFIG["arb_min_yes_price"]:
@@ -424,7 +433,6 @@ def run_honda_backtest():
                outcome, last_trade_price, volume
         FROM markets
         WHERE outcome IS NOT NULL
-        AND last_trade_price > 0
         ORDER BY resolved_at DESC
     """)
     markets = [dict(r) for r in c.fetchall()]
