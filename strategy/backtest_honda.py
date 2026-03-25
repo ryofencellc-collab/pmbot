@@ -186,11 +186,15 @@ def run_honda_backtest():
             })
 
         # ── Strategy 2: Speculation ────────────────────────────────────────
-        # Buy YES at open price (first live price)
-        # HondaCivic enters 2-4 days early when price is cheapest
-        open_price = live[0][1]
-        if open_price <= SPEC_MAX_ENTRY:
-            shares = BET_SIZE / open_price
+        # Buy YES at price 4 days before resolution — HondaCivic's exact timing
+        entry_ts_4d = resolved_at - (4 * 24 * 3600)
+        valid_4d    = [(t, p) for t, p in live if t <= entry_ts_4d]
+        if not valid_4d:
+            valid_4d = live[:1]  # fallback to earliest price
+        entry_4d = valid_4d[-1][1]
+
+        if entry_4d <= SPEC_MAX_ENTRY:
+            shares = BET_SIZE / entry_4d
 
             if outcome == "Yes":
                 pnl = round(shares * 1.0 - BET_SIZE, 4)
@@ -205,16 +209,23 @@ def run_honda_backtest():
                 "city":       m["city"],
                 "question":   (m["question"] or "")[:65],
                 "outcome":    outcome,
-                "open_price": open_price,
-                "multiplier": round(1.0 / open_price, 0),
+                "entry_4d":   entry_4d,
+                "multiplier": round(1.0 / entry_4d, 0),
                 "won":        outcome == "Yes",
                 "pnl":        round(pnl, 2),
             })
 
         # ── Strategy 3: Market Making ──────────────────────────────────────
-        # Buy YES at minimum price, sell when price reaches 80¢+
-        if trough <= MM_MAX_ENTRY:
-            entry_ts = next(t for t, p in live if p == trough)
+        # Buy YES at price 4 days before resolution (Honda's exact timing)
+        # Then sell when price reaches 80¢+ or hold to resolution
+        entry_ts_mm = resolved_at - (4 * 24 * 3600)
+        valid_mm = [(t, p) for t, p in live if t <= entry_ts_mm]
+        if not valid_mm:
+            valid_mm = live[:1]
+        entry_price_4d = valid_mm[-1][1]
+
+        if entry_price_4d <= MM_MAX_ENTRY:
+            entry_ts = valid_mm[-1][0]
             # Find first price >= 80¢ after entry
             exit_price = None
             for t, p in live:
@@ -222,13 +233,12 @@ def run_honda_backtest():
                     exit_price = p
                     break
 
-            shares = BET_SIZE / trough
+            shares = BET_SIZE / entry_price_4d
 
             if exit_price:
                 pnl = round(shares * exit_price - BET_SIZE, 2)
                 mm_wins += 1
             elif outcome == "Yes":
-                # Held to resolution at $1
                 pnl = round(shares * 1.0 - BET_SIZE, 2)
                 mm_wins += 1
             else:
@@ -241,7 +251,7 @@ def run_honda_backtest():
                 "city":      m["city"],
                 "question":  (m["question"] or "")[:65],
                 "outcome":   outcome,
-                "entry":     trough,
+                "entry":     entry_price_4d,
                 "exit":      exit_price or (1.0 if outcome == "Yes" else 0.0),
                 "won":       pnl > 0,
                 "pnl":       round(pnl, 2),
