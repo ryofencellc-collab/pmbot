@@ -564,20 +564,30 @@ def test_honda():
             first_price = history[0][1] if history else None
             min_price = min(p for t, p in history) if history else None
 
-            max_price = max(p for t, p in history) if history else None
+            # Filter to pre-resolution snapshots
+            resolved_at = m.get("resolved_at", 0)
+            if resolved_at:
+                pre_res = [(t, p) for t, p in history if t < resolved_at]
+            else:
+                pre_res = history[:-2] if len(history) > 2 else []
+
+            pre_min   = min(p for t, p in pre_res) if pre_res else None
+            pre_max   = max(p for t, p in pre_res) if pre_res else None
+            pre_first = pre_res[0][1] if pre_res else None
 
             results.append({
                 "market_id":         m["id"],
                 "city":              m["city"],
                 "question":          m["question"][:60] if m["question"] else "",
                 "outcome":           m["outcome"],
-                "snapshots":         len(history),
-                "min_price":         min_price,
-                "max_price":         max_price,
-                "first_price":       first_price,
-                "arb_candidate":     max_price is not None and max_price >= 0.95,
-                "spec_candidate":    min_price is not None and min_price <= 0.05,
-                "mm_candidate":      min_price is not None and min_price <= 0.20 and max_price is not None and max_price >= 0.80,
+                "total_snapshots":   len(history),
+                "pre_res_snapshots": len(pre_res),
+                "pre_min_price":     pre_min,
+                "pre_max_price":     pre_max,
+                "pre_first_price":   pre_first,
+                "arb_candidate":     pre_max is not None and pre_max >= 0.95,
+                "spec_candidate":    pre_min is not None and pre_min <= 0.05,
+                "mm_candidate":      pre_min is not None and pre_min <= 0.20 and pre_max is not None and pre_max >= 0.80,
             })
 
         conn.close()
