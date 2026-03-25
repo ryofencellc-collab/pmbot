@@ -417,35 +417,32 @@ def run_honda_backtest():
     conn = get_conn()
     c    = conn.cursor()
 
-    # Get all resolved markets that have price snapshots
+    # Get ALL resolved markets
     c.execute("""
-        SELECT m.id, m.question, m.city, m.target_low, m.target_high,
-               m.market_type, m.unit, m.resolved_at, m.created_at,
-               m.outcome, m.last_trade_price, m.volume
-        FROM markets m
-        WHERE m.outcome IS NOT NULL
-        AND m.last_trade_price > 0
-        AND EXISTS (SELECT 1 FROM price_snapshots p WHERE p.market_id = m.id)
-        ORDER BY m.resolved_at DESC
+        SELECT id, question, city, target_low, target_high,
+               market_type, unit, resolved_at, created_at,
+               outcome, last_trade_price, volume
+        FROM markets
+        WHERE outcome IS NOT NULL
+        AND last_trade_price > 0
+        ORDER BY resolved_at DESC
     """)
     markets = [dict(r) for r in c.fetchall()]
+    print(f"  Found {len(markets)} resolved markets")
 
-    # Load price snapshots for each market from DB (already have 100k+ stored)
-    market_ids = [m["id"] for m in markets]
+    # Load ALL price snapshots from DB
+    c.execute("""
+        SELECT market_id, timestamp, yes_price
+        FROM price_snapshots
+        ORDER BY market_id, timestamp ASC
+    """)
     price_data = {}
-    if market_ids:
-        placeholders = ",".join(["%s"] * len(market_ids))
-        c.execute(f"""
-            SELECT market_id, timestamp, yes_price
-            FROM price_snapshots
-            WHERE market_id IN ({placeholders})
-            ORDER BY market_id, timestamp ASC
-        """, market_ids)
-        for row in c.fetchall():
-            mid = row["market_id"]
-            if mid not in price_data:
-                price_data[mid] = []
-            price_data[mid].append((row["timestamp"], row["yes_price"]))
+    for row in c.fetchall():
+        mid = row["market_id"]
+        if mid not in price_data:
+            price_data[mid] = []
+        price_data[mid].append((row["timestamp"], row["yes_price"]))
+    print(f"  Found price history for {len(price_data)} markets")
 
     conn.close()
 
