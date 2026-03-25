@@ -554,9 +554,7 @@ def test_honda():
             first_price = history[0][1] if history else None
             min_price = min(p for t, p in history) if history else None
 
-            # Debug timestamp comparison
-            first_snap_ts = history[0][0] if history else None
-            last_snap_ts  = history[-1][0] if history else None
+            max_price = max(p for t, p in history) if history else None
 
             results.append({
                 "market_id":         m["id"],
@@ -564,16 +562,12 @@ def test_honda():
                 "question":          m["question"][:60] if m["question"] else "",
                 "outcome":           m["outcome"],
                 "snapshots":         len(history),
-                "resolved_at":       resolved_at,
-                "first_snap_ts":     first_snap_ts,
-                "last_snap_ts":      last_snap_ts,
-                "ts_before_res":     len(pre_res),
-                "first_price":       first_price,
-                "last_pre_res_price": last_price,
                 "min_price":         min_price,
-                "arb_candidate":     last_price is not None and last_price >= 0.95,
-                "spec_candidate":    first_price is not None and first_price <= 0.05,
-                "mm_candidate":      min_price is not None and min_price <= 0.20,
+                "max_price":         max_price,
+                "first_price":       first_price,
+                "arb_candidate":     max_price is not None and max_price >= 0.95,
+                "spec_candidate":    min_price is not None and min_price <= 0.05,
+                "mm_candidate":      min_price is not None and min_price <= 0.20 and max_price is not None and max_price >= 0.80,
             })
 
         conn.close()
