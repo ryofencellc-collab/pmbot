@@ -523,6 +523,63 @@ def run_honda_background():
         honda_status["done"]    = True
 
 
+@app.get("/backtest/honda/test")
+def test_honda():
+    """Dry run — test Honda backtest logic on 5 markets before full run."""
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+
+        # Get 5 resolved markets that have snapshots
+        c.execute("""
+            SELECT m.id, m.question, m.city, m.outcome, m.resolved_at, m.created_at
+            FROM markets m
+            WHERE m.outcome IS NOT NULL
+            AND EXISTS (SELECT 1 FROM price_snapshots p WHERE p.market_id = m.id)
+            LIMIT 5
+        """)
+        markets = [dict(r) for r in c.fetchall()]
+
+        results = []
+        for m in markets:
+            c.execute("""
+                SELECT timestamp, yes_price FROM price_snapshots
+                WHERE market_id = %s ORDER BY timestamp ASC
+            """, (m["id"],))
+            history = [(r["timestamp"], r["yes_price"]) for r in c.fetchall()]
+
+            resolved_at = m.get("resolved_at", 0)
+            pre_res = [(t, p) for t, p in history if t < resolved_at] if resolved_at else history
+            last_price = pre_res[-1][1] if pre_res else None
+            first_price = history[0][1] if history else None
+            min_price = min(p for t, p in history) if history else None
+
+            results.append({
+                "market_id":   m["id"],
+                "city":        m["city"],
+                "question":    m["question"][:60] if m["question"] else "",
+                "outcome":     m["outcome"],
+                "snapshots":   len(history),
+                "first_price": first_price,
+                "last_pre_res_price": last_price,
+                "min_price":   min_price,
+                "arb_candidate": last_price is not None and last_price >= 0.95,
+                "spec_candidate": first_price is not None and first_price <= 0.05,
+                "mm_candidate":  min_price is not None and min_price <= 0.20,
+            })
+
+        conn.close()
+        return {
+            "status": "ok",
+            "markets_tested": len(results),
+            "results": results,
+            "ready_for_backtest": len(results) > 0
+        }
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "trace": traceback.format_exc()}
+
+
 @app.get("/backtest/honda")
 def run_honda():
     """Start Honda Civic full strategy backtest in background."""
