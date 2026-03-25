@@ -547,32 +547,25 @@ def debug_db():
         c = conn.cursor()
         results = {}
 
-        c.execute("SELECT COUNT(*) FROM markets")
-        results["total_markets"] = c.fetchone()[0]
+        def count(query, params=None):
+            if params:
+                c.execute(query, params)
+            else:
+                c.execute(query)
+            row = c.fetchone()
+            return list(row.values())[0] if row else 0
 
-        c.execute("SELECT COUNT(*) FROM markets WHERE outcome IS NOT NULL")
-        results["resolved"] = c.fetchone()[0]
-
-        c.execute("SELECT COUNT(*) FROM markets WHERE outcome = %s", ("Yes",))
-        results["outcome_yes"] = c.fetchone()[0]
-
-        c.execute("SELECT COUNT(*) FROM markets WHERE outcome = %s", ("No",))
-        results["outcome_no"] = c.fetchone()[0]
-
-        c.execute("SELECT COUNT(*) FROM markets WHERE last_trade_price > 0")
-        results["has_price"] = c.fetchone()[0]
-
-        c.execute("SELECT COUNT(*) FROM markets WHERE outcome IS NOT NULL AND last_trade_price > 0")
-        results["resolved_with_price"] = c.fetchone()[0]
-
-        c.execute("SELECT COUNT(*) FROM price_snapshots")
-        results["total_snapshots"] = c.fetchone()[0]
-
-        c.execute("SELECT COUNT(DISTINCT market_id) FROM price_snapshots")
-        results["markets_with_snapshots"] = c.fetchone()[0]
+        results["total_markets"] = count("SELECT COUNT(*) FROM markets")
+        results["resolved"] = count("SELECT COUNT(*) FROM markets WHERE outcome IS NOT NULL")
+        results["outcome_yes"] = count("SELECT COUNT(*) FROM markets WHERE outcome = %s", ("Yes",))
+        results["outcome_no"] = count("SELECT COUNT(*) FROM markets WHERE outcome = %s", ("No",))
+        results["has_price"] = count("SELECT COUNT(*) FROM markets WHERE last_trade_price > 0")
+        results["resolved_with_price"] = count("SELECT COUNT(*) FROM markets WHERE outcome IS NOT NULL AND last_trade_price > 0")
+        results["total_snapshots"] = count("SELECT COUNT(*) FROM price_snapshots")
+        results["markets_with_snapshots"] = count("SELECT COUNT(DISTINCT market_id) FROM price_snapshots")
 
         c.execute("SELECT market_id FROM price_snapshots LIMIT 3")
-        results["sample_snapshot_ids"] = [r[0] for r in c.fetchall()]
+        results["sample_snapshot_ids"] = [list(r.values())[0] for r in c.fetchall()]
 
         c.execute("SELECT id, outcome, last_trade_price FROM markets WHERE outcome IS NOT NULL LIMIT 3")
         results["sample_markets"] = [dict(r) for r in c.fetchall()]
