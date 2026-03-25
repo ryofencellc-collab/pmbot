@@ -564,13 +564,8 @@ def test_honda():
             first_price = history[0][1] if history else None
             min_price = min(p for t, p in history) if history else None
 
-            # Filter to pre-resolution snapshots
-            resolved_at = m.get("resolved_at", 0)
-            if resolved_at:
-                pre_res = [(t, p) for t, p in history if t < resolved_at]
-            else:
-                pre_res = history[:-2] if len(history) > 2 else []
-
+            # Filter to live trading prices only (exclude post-resolution 0.001/0.999)
+            pre_res   = [(t, p) for t, p in history if 0.001 < p < 0.999]
             pre_min   = min(p for t, p in pre_res) if pre_res else None
             pre_max   = max(p for t, p in pre_res) if pre_res else None
             pre_first = pre_res[0][1] if pre_res else None
