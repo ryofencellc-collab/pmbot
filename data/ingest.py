@@ -116,14 +116,18 @@ def fetch_event(city, city_slug, target_date):
             except Exception:
                 prices = []
 
-        yes_price = float(prices[0]) if prices else 0.0
+        # Use lastTradePrice for actual market price (not resolution price)
+        last_trade = float(m.get("lastTradePrice") or 0.0)
+        yes_price = last_trade if last_trade > 0 else (float(prices[0]) if prices else 0.0)
 
         outcome = None
         if m.get("closed"):
             if prices and str(prices[0]) == "1":
                 outcome = "Yes"
+                yes_price = last_trade if last_trade > 0 else yes_price
             elif len(prices) > 1 and str(prices[1]) == "1":
                 outcome = "No"
+                yes_price = last_trade if last_trade > 0 else yes_price
 
         end_str = m.get("endDate", "")
         try:
