@@ -174,18 +174,21 @@ def startup():
 
 @app.api_route("/health", methods=["GET", "POST", "HEAD"])
 def health():
-    conn   = get_conn()
-    c      = conn.cursor()
-    tables = {}
-    for t in ["markets", "wu_temps", "paper_trades", "session_logs", "noaa_forecasts"]:
-        try:
-            c.execute(f"SELECT COUNT(*) as count FROM {t}")
-            row      = c.fetchone()
-            tables[t] = row["count"] if row else 0
-        except Exception:
-            tables[t] = 0
-    conn.close()
-    return {"status": "ok", "tables": tables, "ingest": ingest_status}
+    try:
+        conn = get_conn()
+        c    = conn.cursor()
+        tables = {}
+        for t in ["markets", "wu_temps", "paper_trades", "session_logs", "noaa_forecasts"]:
+            try:
+                c.execute(f"SELECT COUNT(*) as count FROM {t}")
+                row      = c.fetchone()
+                tables[t] = row["count"] if row else 0
+            except Exception:
+                tables[t] = 0
+        conn.close()
+        return {"status": "ok", "tables": tables, "ingest": ingest_status}
+    except Exception as e:
+        return {"status": "degraded", "error": str(e), "ingest": ingest_status}
 
 
 # ── Ingest ────────────────────────────────────────────────────────────────────
@@ -695,7 +698,7 @@ def run_backtest_all_city(city_name: str):
         city = city.replace("Buenos Aires", "Buenos Aires")
         if city not in CITY_CONFIGS:
             # Try partial match
-            matches = [c for c in CITY_CONFIGS.keys() 
+            matches = [c for c in CITY_CONFIGS.keys()
                       if city.lower() in c.lower() or c.lower() in city.lower()]
             if len(matches) == 1:
                 city = matches[0]
