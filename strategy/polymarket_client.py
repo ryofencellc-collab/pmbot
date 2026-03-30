@@ -1,13 +1,13 @@
 """
 polymarket_client.py - Real money trading on Polymarket CLOB API.
 
-Uses private key signing to place real orders without MetaMask popup.
-Supports both paper and real money modes via environment variable.
+Uses py-clob-client (official Polymarket Python library) for auth and trading.
+MetaMask wallets require signature_type=1 and funder address.
 
-Set in Railway environment variables:
-  POLYMARKET_PRIVATE_KEY = your MetaMask private key (0x...)
-  POLYMARKET_WALLET      = your wallet address (0x...)
-  TRADING_MODE           = "real" or "paper" (default: paper)
+Railway environment variables required:
+  POLYMARKET_PRIVATE_KEY = MetaMask private key (with 0x prefix)
+  POLYMARKET_WALLET      = MetaMask wallet address (0x...)
+  TRADING_MODE           = "real" or "paper"
   BET_SIZE_REAL          = bet size in dollars (default: 1.0)
 """
 
@@ -15,199 +15,132 @@ import os
 import json
 import time
 import requests
-import hashlib
-import hmac
-from datetime import datetime
 
 CLOB_BASE    = "https://clob.polymarket.com"
 GAMMA_BASE   = "https://gamma-api.polymarket.com"
+CHAIN_ID     = 137  # Polygon mainnet
 
-# Read from Railway environment variables
 PRIVATE_KEY  = os.getenv("POLYMARKET_PRIVATE_KEY", "")
 WALLET       = os.getenv("POLYMARKET_WALLET", "")
 TRADING_MODE = os.getenv("TRADING_MODE", "paper")
 BET_SIZE     = float(os.getenv("BET_SIZE_REAL", "1.0"))
 
+
 def is_real_mode():
-    return TRADING_MODE == "real" and PRIVATE_KEY and WALLET
+    return TRADING_MODE == "real" and bool(PRIVATE_KEY) and bool(WALLET)
 
-def safe_get(url, params=None, headers=None, retries=3):
-    for i in range(retries):
-        try:
-            r = requests.get(url, params=params, headers=headers, timeout=20)
-            if r.status_code == 200:
-                return r.json()
-            if r.status_code == 429:
-                time.sleep(30)
-        except Exception as e:
-            print(f"  [GET ERR] {e}")
-        time.sleep(2 ** i)
-    return None
 
-def safe_post(url, data=None, headers=None, retries=3):
-    for i in range(retries):
-        try:
-            r = requests.post(url, json=data, headers=headers, timeout=20)
-            if r.status_code in (200, 201):
-                return r.json()
-            print(f"  [POST {r.status_code}] {r.text[:200]}")
-        except Exception as e:
-            print(f"  [POST ERR] {e}")
-        time.sleep(2 ** i)
-    return None
+def get_client():
+    """Get authenticated py-clob-client instance."""
+    from py_clob_client.client import ClobClient
 
-def get_api_key():
-    """
-    Derive API key from private key using Polymarket's auth endpoint.
-    This is a one-time call that returns credentials for placing orders.
-    """
-    if not PRIVATE_KEY or not WALLET:
-        return None, None, None
+    # Remove 0x prefix — py-clob-client expects key without it
+    key = PRIVATE_KEY
+    if key.startswith("0x") or key.startswith("0X"):
+        key = key[2:]
 
-    try:
-        from eth_account import Account
-        from eth_account.messages import encode_defunct
+    client = ClobClient(
+        CLOB_BASE,
+        key=key,
+        chain_id=CHAIN_ID,
+        signature_type=1,   # MetaMask / browser wallet
+        funder=WALLET,      # Address holding the funds
+    )
+    client.set_api_creds(client.create_or_derive_api_creds())
+    return client
 
-        account = Account.from_key(PRIVATE_KEY)
-
-        # Polymarket uses a specific message for API key derivation
-        nonce    = int(time.time())
-        message  = f"This message attests that I control the given wallet\nnonce: {nonce}"
-        msg      = encode_defunct(text=message)
-        signed   = account.sign_message(msg)
-        sig      = signed.signature.hex()
-
-        # Get API credentials
-        payload = {
-            "address":   WALLET,
-            "signature": sig,
-            "nonce":     nonce,
-        }
-        resp = safe_post(f"{CLOB_BASE}/auth/derive-api-key", data=payload)
-        if resp:
-            return resp.get("apiKey"), resp.get("secret"), resp.get("passphrase")
-    except Exception as e:
-        print(f"  [AUTH ERR] {e}")
-
-    return None, None, None
 
 def get_token_id(market_id):
-    """Get CLOB token ID for a market."""
-    data = safe_get(f"{GAMMA_BASE}/markets/{market_id}")
-    if not data:
-        return None
-    tokens = data.get("clobTokenIds")
-    if isinstance(tokens, str):
-        try:
-            tokens = json.loads(tokens)
-        except Exception:
-            return None
-    return tokens[0] if tokens else None
-
-def get_current_price(token_id):
-    """Get current YES price for a token."""
-    data = safe_get(f"{CLOB_BASE}/price", params={"token_id": token_id, "side": "buy"})
-    if data and "price" in data:
-        return float(data["price"])
+    """Get CLOB token ID for a market's YES outcome."""
+    try:
+        r = requests.get(f"{GAMMA_BASE}/markets/{market_id}", timeout=15)
+        if r.status_code == 200:
+            data   = r.json()
+            tokens = data.get("clobTokenIds")
+            if isinstance(tokens, str):
+                tokens = json.loads(tokens)
+            return tokens[0] if tokens else None
+    except Exception as e:
+        print(f"  [TOKEN ERR] {e}")
     return None
+
 
 def place_real_order(market_id, question, city, yes_price):
     """
-    Place a real money order on Polymarket.
+    Place a real money market order on Polymarket.
     Returns dict with success status and details.
     """
     if not is_real_mode():
-        return {"success": False, "error": "Not in real mode — check TRADING_MODE env var"}
+        return {"success": False, "error": "Not in real mode"}
 
     try:
-        from eth_account import Account
-        from eth_account.messages import encode_defunct
+        from py_clob_client.client import ClobClient
+        from py_clob_client.clob_types import MarketOrderArgs, OrderType
+        from py_clob_client.order_builder.constants import BUY
 
-        # Get token ID
+        client   = get_client()
         token_id = get_token_id(market_id)
+
         if not token_id:
-            return {"success": False, "error": "Could not get token ID"}
+            return {"success": False, "error": f"No token ID for market {market_id}"}
 
-        # Get current price
-        current_price = get_current_price(token_id)
-        if not current_price:
-            current_price = yes_price
+        # Place market order — buys at best available price
+        mo     = MarketOrderArgs(
+            token_id   = token_id,
+            amount     = BET_SIZE,   # dollar amount to spend
+            side       = BUY,
+            order_type = OrderType.FOK,  # Fill or Kill — all or nothing
+        )
+        signed = client.create_market_order(mo)
+        resp   = client.post_order(signed, OrderType.FOK)
 
-        # Calculate shares
-        shares = round(BET_SIZE / current_price, 2)
+        print(f"  [REAL ORDER] {city} | {question[:40]} | ${BET_SIZE} | {resp}")
 
-        # Get API credentials
-        api_key, secret, passphrase = get_api_key()
-        if not api_key:
-            return {"success": False, "error": "Could not get API credentials"}
-
-        # Build order
-        account   = Account.from_key(PRIVATE_KEY)
-        nonce     = int(time.time() * 1000)
-        order     = {
-            "tokenID":   token_id,
-            "side":      "BUY",
-            "price":     str(current_price),
-            "size":      str(shares),
-            "orderType": "GTC",   # Good Till Cancelled
-            "nonce":     nonce,
-            "maker":     WALLET,
-        }
-
-        # Sign the order
-        order_str = json.dumps(order, separators=(",", ":"), sort_keys=True)
-        msg       = encode_defunct(text=order_str)
-        signed    = account.sign_message(msg)
-        order["signature"] = signed.signature.hex()
-
-        # Submit order
-        headers = {
-            "POLY-API-KEY":    api_key,
-            "POLY-PASSPHRASE": passphrase,
-            "Content-Type":    "application/json",
-        }
-        result = safe_post(f"{CLOB_BASE}/order", data=order, headers=headers)
-
-        if result and result.get("orderID"):
-            print(f"  [REAL ORDER] {city} {question[:40]} | ${BET_SIZE} | order={result['orderID']}")
+        if resp and resp.get("success"):
             return {
-                "success":    True,
-                "order_id":   result["orderID"],
-                "market_id":  market_id,
-                "city":       city,
-                "question":   question,
-                "price":      current_price,
-                "shares":     shares,
-                "bet_size":   BET_SIZE,
-                "mode":       "REAL",
+                "success":   True,
+                "order_id":  resp.get("orderID", ""),
+                "market_id": market_id,
+                "city":      city,
+                "question":  question,
+                "bet_size":  BET_SIZE,
+                "mode":      "REAL",
+                "response":  resp,
             }
         else:
-            return {"success": False, "error": str(result)}
+            return {"success": False, "error": str(resp)}
 
     except ImportError:
-        return {"success": False, "error": "eth_account not installed — add to requirements.txt"}
+        return {"success": False, "error": "py-clob-client not installed — check requirements.txt"}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        import traceback
+        return {"success": False, "error": str(e), "trace": traceback.format_exc()}
+
 
 def test_connection():
-    """Test that credentials work without placing a real order."""
+    """Test credentials without placing a real order."""
     if not PRIVATE_KEY or not WALLET:
-        return {"status": "error", "message": "No private key or wallet configured"}
+        return {"status": "error", "message": "POLYMARKET_PRIVATE_KEY or POLYMARKET_WALLET not set"}
 
     if not is_real_mode():
         return {"status": "paper", "message": "TRADING_MODE is not 'real' — paper trading only"}
 
-    api_key, secret, passphrase = get_api_key()
-    if api_key:
+    try:
+        client = get_client()
+        # Simple test — get server time (no auth needed but confirms client init worked)
+        ok = client.get_ok()
         return {
-            "status":  "connected",
-            "message": "Credentials verified — ready to trade",
-            "wallet":  WALLET[:10] + "...",
-            "mode":    "REAL",
+            "status":   "connected",
+            "message":  "Credentials verified — ready to trade",
+            "wallet":   WALLET[:10] + "...",
+            "mode":     "REAL",
             "bet_size": BET_SIZE,
+            "server":   ok,
         }
-    else:
-        return {"status": "error", "message": "Could not authenticate with private key"}
+    except ImportError:
+        return {"status": "error", "message": "py-clob-client not installed — check requirements.txt"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 if __name__ == "__main__":
