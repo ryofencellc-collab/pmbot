@@ -68,15 +68,8 @@ def run_scheduler():
                 # Then run morning session
                 try:
                     from strategy.paper_trade import run_morning_session
-                    trades, log = run_morning_session()
-                    print(f"[SCHEDULER] Morning done. {len(trades)} trades placed.")
-                    # Early entry trades (Honda strategy)
-                    try:
-                        from strategy.early_entry import place_early_trades
-                        early = place_early_trades()
-                        print(f"[EARLY] {early['trades']} early entry trades placed.")
-                    except Exception as e2:
-                        print(f"[EARLY] Error: {e2}")
+                    # Paper trading disabled — real money only
+                    print(f"[SCHEDULER] Paper trading disabled — real money mode only")
                     # Real money trading if enabled
                     import os
                     if os.getenv("TRADING_MODE") == "real":
@@ -95,6 +88,31 @@ def run_scheduler():
                                     )
                                     if result.get("success"):
                                         placed += 1
+                                        # Log real trade to DB
+                                        try:
+                                            from data.database import get_conn as _gc
+                                            _conn = _gc()
+                                            _c    = _conn.cursor()
+                                            _c.execute("""
+                                                INSERT INTO paper_trades
+                                                (trade_date, market_id, question, city, entry_price,
+                                                 noaa_forecast_f, predicted_range, size, capital_at_entry)
+                                                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                                            """, (
+                                                __import__('datetime').date.today().isoformat(),
+                                                sig["market_id"],
+                                                sig["question"],
+                                                sig["city"],
+                                                sig["entry_price"],
+                                                sig.get("forecast") or 0.0,
+                                                f"REAL:${result.get('bet_size',1.0)}",
+                                                result.get("bet_size", 1.0),
+                                                0.0,
+                                            ))
+                                            _conn.commit()
+                                            _conn.close()
+                                        except Exception as _e:
+                                            print(f"[REAL LOG ERR] {_e}")
                                     time.sleep(0.5)
                                 print(f"[REAL] {placed} real money orders placed")
                         except Exception as e3:
@@ -196,18 +214,21 @@ def startup():
 
 @app.api_route("/health", methods=["GET", "POST", "HEAD"])
 def health():
-    conn   = get_conn()
-    c      = conn.cursor()
-    tables = {}
-    for t in ["markets", "wu_temps", "paper_trades", "session_logs", "noaa_forecasts"]:
-        try:
-            c.execute(f"SELECT COUNT(*) as count FROM {t}")
-            row      = c.fetchone()
-            tables[t] = row["count"] if row else 0
-        except Exception:
-            tables[t] = 0
-    conn.close()
-    return {"status": "ok", "tables": tables, "ingest": ingest_status}
+    try:
+        conn   = get_conn()
+        c      = conn.cursor()
+        tables = {}
+        for t in ["markets", "wu_temps", "paper_trades", "session_logs", "noaa_forecasts"]:
+            try:
+                c.execute(f"SELECT COUNT(*) as count FROM {t}")
+                row      = c.fetchone()
+                tables[t] = row["count"] if row else 0
+            except Exception:
+                tables[t] = 0
+        conn.close()
+        return {"status": "ok", "tables": tables, "ingest": ingest_status}
+    except Exception as e:
+        return {"status": "degraded", "error": str(e), "ingest": ingest_status}
 
 
 # ── Ingest ────────────────────────────────────────────────────────────────────
@@ -267,7 +288,9 @@ def get_trades():
         c    = conn.cursor()
         c.execute("""SELECT trade_date, city, question, entry_price, size,
                             noaa_forecast_f, predicted_range, outcome, pnl
-                     FROM paper_trades ORDER BY trade_date DESC, id DESC""")
+                     FROM paper_trades
+                     WHERE predicted_range LIKE 'REAL:%'
+                     ORDER BY trade_date DESC, id DESC""")
         trades = [dict(r) for r in c.fetchall()]
         conn.close()
         return trades
@@ -277,12 +300,51 @@ def get_trades():
 
 @app.get("/performance")
 def get_performance():
+    """Real money P&L only."""
     try:
-        from strategy.paper_trade import get_performance
-        return get_performance()
+        conn = get_conn()
+        c    = conn.cursor()
+        c.execute("""
+            SELECT COUNT(*) as total,
+                   SUM(CASE WHEN outcome='Yes' THEN 1 ELSE 0 END) as wins,
+                   SUM(CASE WHEN pnl IS NOT NULL THEN pnl ELSE 0 END) as total_pnl,
+                   MAX(pnl) as best_trade,
+                   MIN(pnl) as worst_trade
+            FROM paper_trades
+            WHERE predicted_range LIKE 'REAL:%'
+        """)
+        row = c.fetchone()
+        c.execute("""
+            SELECT trade_date, city, question, entry_price, size,
+                   predicted_range, outcome, pnl
+            FROM paper_trades
+            WHERE predicted_range LIKE 'REAL:%'
+            ORDER BY trade_date DESC, id DESC
+        """)
+        trades = [dict(r) for r in c.fetchall()]
+        conn.close()
+
+        total    = row["total"] or 0
+        wins     = row["wins"] or 0
+        total_pnl = float(row["total_pnl"] or 0)
+        spent    = total * 1.0  # $1 per bet
+        roi      = round((total_pnl / spent * 100), 2) if spent > 0 else 0
+
+        return {
+            "total_bets":    total,
+            "wins":          wins,
+            "win_rate":      round(wins / total * 100, 2) if total > 0 else 0,
+            "total_pnl":     round(total_pnl, 2),
+            "amount_spent":  spent,
+            "roi":           roi,
+            "best_trade":    float(row["best_trade"] or 0),
+            "worst_trade":   float(row["worst_trade"] or 0),
+            "trades":        trades,
+            "mode":          "REAL",
+        }
     except Exception as e:
         return {"total_bets": 0, "wins": 0, "win_rate": 0,
-                "total_pnl": 0, "final_capital": 100.0, "roi": 0,
+                "total_pnl": 0, "amount_spent": 0, "roi": 0,
                 "best_trade": 0, "worst_trade": 0, "trades": [], "error": str(e)}
 
 
@@ -574,6 +636,42 @@ def run_early_trades():
     except Exception as e:
         import traceback
         return {"error": str(e), "trace": traceback.format_exc()}
+
+
+# ── Reset / Clear Trades ──────────────────────────────────────────────────
+
+@app.get("/admin/clear-paper-trades")
+def clear_paper_trades():
+    """Clear all paper trades to start fresh with real money tracking."""
+    try:
+        conn = get_conn()
+        c    = conn.cursor()
+        c.execute("SELECT COUNT(*) as count FROM paper_trades")
+        count = c.fetchone()["count"]
+        c.execute("DELETE FROM paper_trades")
+        conn.commit()
+        conn.close()
+        return {"status": "cleared", "trades_removed": count, "message": "Ready for real money tracking"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/admin/clear-paper-only")
+def clear_paper_only():
+    """Clear only paper trades (EARLY: and paper), keep real money trades."""
+    try:
+        conn = get_conn()
+        c    = conn.cursor()
+        # Keep trades that have real order IDs (real money)
+        # Paper trades have predicted_range starting with EARLY: or have no order_id
+        c.execute("SELECT COUNT(*) as count FROM paper_trades WHERE predicted_range LIKE 'EARLY:%' OR predicted_range LIKE '%.0F' OR predicted_range LIKE '%.0-%'")
+        count = c.fetchone()["count"]
+        c.execute("DELETE FROM paper_trades WHERE predicted_range LIKE 'EARLY:%' OR predicted_range LIKE '%.0F' OR predicted_range LIKE '%.0-%'")
+        conn.commit()
+        conn.close()
+        return {"status": "cleared", "paper_trades_removed": count, "message": "Paper trades cleared — real trades preserved"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 # ── Real Money Trading ────────────────────────────────────────────────────
