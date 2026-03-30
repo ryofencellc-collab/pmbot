@@ -77,6 +77,28 @@ def run_scheduler():
                         print(f"[EARLY] {early['trades']} early entry trades placed.")
                     except Exception as e2:
                         print(f"[EARLY] Error: {e2}")
+                    # Real money trading if enabled
+                    import os
+                    if os.getenv("TRADING_MODE") == "real":
+                        try:
+                            from strategy.polymarket_client import is_real_mode, place_real_order, BET_SIZE
+                            from strategy.early_entry import get_early_signals
+                            if is_real_mode():
+                                signals, _ = get_early_signals()
+                                placed = 0
+                                for sig in signals[:20]:  # max 20 real bets per night
+                                    result = place_real_order(
+                                        sig["market_id"],
+                                        sig["question"],
+                                        sig["city"],
+                                        sig["entry_price"]
+                                    )
+                                    if result.get("success"):
+                                        placed += 1
+                                    time.sleep(0.5)
+                                print(f"[REAL] {placed} real money orders placed")
+                        except Exception as e3:
+                            print(f"[REAL] Error: {e3}")
                 except Exception as e:
                     print(f"[SCHEDULER] Morning error: {e}")
 
@@ -174,21 +196,18 @@ def startup():
 
 @app.api_route("/health", methods=["GET", "POST", "HEAD"])
 def health():
-    try:
-        conn = get_conn()
-        c    = conn.cursor()
-        tables = {}
-        for t in ["markets", "wu_temps", "paper_trades", "session_logs", "noaa_forecasts"]:
-            try:
-                c.execute(f"SELECT COUNT(*) as count FROM {t}")
-                row      = c.fetchone()
-                tables[t] = row["count"] if row else 0
-            except Exception:
-                tables[t] = 0
-        conn.close()
-        return {"status": "ok", "tables": tables, "ingest": ingest_status}
-    except Exception as e:
-        return {"status": "degraded", "error": str(e), "ingest": ingest_status}
+    conn   = get_conn()
+    c      = conn.cursor()
+    tables = {}
+    for t in ["markets", "wu_temps", "paper_trades", "session_logs", "noaa_forecasts"]:
+        try:
+            c.execute(f"SELECT COUNT(*) as count FROM {t}")
+            row      = c.fetchone()
+            tables[t] = row["count"] if row else 0
+        except Exception:
+            tables[t] = 0
+    conn.close()
+    return {"status": "ok", "tables": tables, "ingest": ingest_status}
 
 
 # ── Ingest ────────────────────────────────────────────────────────────────────
@@ -557,6 +576,50 @@ def run_early_trades():
         return {"error": str(e), "trace": traceback.format_exc()}
 
 
+# ── Real Money Trading ────────────────────────────────────────────────────
+
+@app.get("/trade/test")
+def test_real_connection():
+    """Test real money connection without placing orders."""
+    try:
+        from strategy.polymarket_client import test_connection
+        return test_connection()
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/trade/real")
+def place_real_trade(market_id: str, city: str = "", question: str = "", price: float = 0.01):
+    """
+    Place a single real money trade on Polymarket.
+    Usage: /trade/real?market_id=123456&city=London&question=...&price=0.005
+    """
+    try:
+        from strategy.polymarket_client import place_real_order
+        result = place_real_order(market_id, question, city, price)
+        return result
+    except Exception as e:
+        import traceback
+        return {"success": False, "error": str(e), "trace": traceback.format_exc()}
+
+
+@app.get("/trade/mode")
+def trading_mode():
+    """Check current trading mode (paper or real)."""
+    import os
+    mode     = os.getenv("TRADING_MODE", "paper")
+    wallet   = os.getenv("POLYMARKET_WALLET", "")
+    bet_size = os.getenv("BET_SIZE_REAL", "1.0")
+    has_key  = bool(os.getenv("POLYMARKET_PRIVATE_KEY", ""))
+    return {
+        "mode":       mode,
+        "wallet":     wallet[:10] + "..." if wallet else "not set",
+        "has_key":    has_key,
+        "bet_size":   bet_size,
+        "ready":      mode == "real" and has_key and bool(wallet),
+    }
+
+
 @app.get("/backtest/honda/test")
 def test_honda():
     """Dry run — test Honda backtest logic on 5 markets before full run."""
@@ -698,7 +761,7 @@ def run_backtest_all_city(city_name: str):
         city = city.replace("Buenos Aires", "Buenos Aires")
         if city not in CITY_CONFIGS:
             # Try partial match
-            matches = [c for c in CITY_CONFIGS.keys()
+            matches = [c for c in CITY_CONFIGS.keys() 
                       if city.lower() in c.lower() or c.lower() in city.lower()]
             if len(matches) == 1:
                 city = matches[0]
