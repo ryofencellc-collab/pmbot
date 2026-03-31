@@ -174,6 +174,7 @@
 <div class="nav-tabs">
   <div class="nav-tab active" onclick="showPage('signals', this)">📡 Live Signals</div>
   <div class="nav-tab" onclick="showPage('tracking', this)">📊 Signal Tracker</div>
+  <div class="nav-tab" onclick="showPage('backtest', this)">🔬 Accuracy Test</div>
 </div>
 
 <!-- SIGNALS PAGE -->
@@ -208,6 +209,35 @@
       <div class="icon">📡</div>
       <p>Hit Refresh to see today's best bets</p>
     </div>
+  </div>
+</div>
+
+<!-- BACKTEST PAGE -->
+<div class="page" id="page-backtest">
+  <div class="controls">
+    <button onclick="runBacktest(7)">Last 7 Days</button>
+    <button onclick="runBacktest(14)" style="background:#1e1e2e;border:1px solid #333;color:#aaa">Last 14 Days</button>
+    <button onclick="runBacktest(30)" style="background:#1e1e2e;border:1px solid #333;color:#aaa">Last 30 Days</button>
+  </div>
+  <div class="status-bar" id="btStatus">Click a button to run accuracy test</div>
+  <div class="summary" id="btSummary" style="display:none">
+    <div class="stat"><div class="label">Bets Simulated</div><div class="value purple" id="btBets">0</div></div>
+    <div class="stat"><div class="label">Wins</div><div class="value green" id="btWins">0</div></div>
+    <div class="stat"><div class="label">Win Rate</div><div class="value yellow" id="btRate">—</div></div>
+    <div class="stat"><div class="label">P&L per $10</div><div class="value green" id="btPnl">$0</div></div>
+    <div class="stat"><div class="label">Markets Checked</div><div class="value" id="btChecked">0</div></div>
+  </div>
+  <div class="section-title" id="btTitle" style="display:none">📋 Individual Results</div>
+  <div class="track-table">
+    <table id="btTable" style="display:none">
+      <thead>
+        <tr>
+          <th>Date</th><th>City</th><th>Question</th>
+          <th>Price</th><th>Actual Temp</th><th>Outcome</th><th>P&L</th>
+        </tr>
+      </thead>
+      <tbody id="btBody"></tbody>
+    </table>
   </div>
 </div>
 
@@ -462,6 +492,62 @@ function toggleAuto() {
   clearInterval(autoTimer);
   if (document.getElementById('autoRefresh').checked) {
     autoTimer = setInterval(loadSignals, 5*60*1000);
+  }
+}
+
+async function runBacktest(days) {
+  const status = document.getElementById('btStatus');
+  status.className = 'status-bar loading';
+  status.textContent = `Running ${days}-day accuracy test... (takes ~30 seconds)`;
+  document.getElementById('btSummary').style.display = 'none';
+  document.getElementById('btTable').style.display = 'none';
+  document.getElementById('btTitle').style.display = 'none';
+
+  try {
+    const res = await fetch(`/backtest/accuracy?days=${days}`);
+    const data = await res.json();
+
+    if (data.status === 'error') {
+      status.className = 'status-bar error';
+      status.textContent = '❌ Error: ' + data.message;
+      return;
+    }
+
+    status.className = 'status-bar ok';
+    status.textContent = `✅ Done — checked ${data.markets_checked} resolved markets`;
+
+    document.getElementById('btSummary').style.display = 'flex';
+    document.getElementById('btBets').textContent = data.would_have_bet;
+    document.getElementById('btWins').textContent = data.wins;
+    document.getElementById('btRate').textContent = data.win_rate + '%';
+
+    const pnl = data.total_pnl_per_10 || 0;
+    const pnlEl = document.getElementById('btPnl');
+    pnlEl.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
+    pnlEl.className = 'value ' + (pnl >= 0 ? 'green' : 'red');
+    document.getElementById('btChecked').textContent = data.markets_checked;
+
+    if (data.results && data.results.length) {
+      document.getElementById('btTitle').style.display = 'block';
+      document.getElementById('btTable').style.display = 'table';
+      document.getElementById('btBody').innerHTML = data.results.map(r => {
+        const win = r.outcome === 'Yes';
+        const pill = win ? '<span class="pill yes">WIN ✓</span>' : '<span class="pill no">LOSS ✗</span>';
+        const pnl = win ? `<span style="color:#44ff88">+$${r.pnl.toFixed(2)}</span>` : `<span style="color:#ff4444">-$${Math.abs(r.pnl).toFixed(2)}</span>`;
+        return `<tr>
+          <td style="color:#666">${r.date}</td>
+          <td style="font-weight:600">${r.city}</td>
+          <td style="color:#aaa;font-size:12px">${r.question}</td>
+          <td style="color:#ffcc44">${r.price}¢</td>
+          <td style="color:#44aaff">${r.actual_temp}°</td>
+          <td>${pill}</td>
+          <td>${pnl}</td>
+        </tr>`;
+      }).join('');
+    }
+  } catch(e) {
+    status.className = 'status-bar error';
+    status.textContent = '❌ Failed to run backtest';
   }
 }
 
