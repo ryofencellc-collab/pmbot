@@ -66,11 +66,8 @@ def run_scheduler():
                 except Exception as e:
                     print(f"[SCHEDULER] Ingest error: {e}")
                 # Then run morning session
+                # Real money trading — completely independent
                 try:
-                    from strategy.paper_trade import run_morning_session
-                    # Paper trading disabled — real money only
-                    print(f"[SCHEDULER] Paper trading disabled — real money mode only")
-                    # Real money trading if enabled
                     import os
                     if os.getenv("TRADING_MODE") == "real":
                         try:
@@ -79,7 +76,17 @@ def run_scheduler():
                             if is_real_mode():
                                 signals, _ = get_early_signals()
                                 placed = 0
-                                for sig in signals[:20]:  # max 20 real bets per night
+                                # Sort by forecast proximity — buy closest matches first
+                                import re as _re
+                                def _score(s):
+                                    q = (s.get("question","")).lower()
+                                    nums = [float(x) for x in _re.findall(r"-?\d+\.?\d*", q) if -50 < float(x) < 150]
+                                    if not nums: return 0
+                                    target = sum(nums)/len(nums)
+                                    gap = abs(target - (s.get("forecast") or 0))
+                                    return -gap  # negative so closest = highest
+                                signals = sorted(signals, key=_score, reverse=True)
+                                for sig in signals[:3]:  # TEST: 3 best bets only
                                     result = place_real_order(
                                         sig["market_id"],
                                         sig["question"],
@@ -805,6 +812,82 @@ def clear_paper_only():
 
 
 # ── Real Money Trading ────────────────────────────────────────────────────
+
+@app.get("/trade/run-now")
+def run_real_trades_now():
+    """Manually trigger real money trades right now — no need to wait for 7AM."""
+    try:
+        import os
+        if os.getenv("TRADING_MODE") != "real":
+            return {"status": "error", "message": "TRADING_MODE is not real"}
+        
+        from strategy.polymarket_client import is_real_mode, place_real_order
+        from strategy.early_entry import get_early_signals
+
+        if not is_real_mode():
+            return {"status": "error", "message": "Not in real mode"}
+
+        signals, _ = get_early_signals()
+        placed  = 0
+        failed  = 0
+        results = []
+
+        # Sort by forecast proximity — best matches first
+        import re as _re
+        def _score(s):
+            q = (s.get("question","")).lower()
+            nums = [float(x) for x in _re.findall(r"-?\d+\.?\d*", q) if -50 < float(x) < 150]
+            if not nums: return 0
+            target = sum(nums)/len(nums)
+            gap = abs(target - (s.get("forecast") or 0))
+            return -gap
+        signals = sorted(signals, key=_score, reverse=True)
+
+        for sig in signals[:3]:
+            result = place_real_order(
+                sig["market_id"],
+                sig["question"],
+                sig["city"],
+                sig["entry_price"]
+            )
+            if result.get("success"):
+                placed += 1
+                # Log to DB
+                try:
+                    import datetime
+                    conn = get_conn()
+                    c    = conn.cursor()
+                    c.execute("""
+                        INSERT INTO paper_trades
+                        (trade_date, market_id, question, city, entry_price,
+                         noaa_forecast_f, predicted_range, size, capital_at_entry)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    """, (
+                        datetime.date.today().isoformat(),
+                        sig["market_id"], sig["question"], sig["city"],
+                        sig["entry_price"], sig.get("forecast") or 0.0,
+                        f"REAL:${result.get('bet_size',1.0)}",
+                        result.get("bet_size", 1.0), 0.0,
+                    ))
+                    conn.commit()
+                    conn.close()
+                except Exception as e:
+                    print(f"[LOG ERR] {e}")
+            else:
+                failed += 1
+            results.append({"city": sig["city"], "success": result.get("success"), "error": result.get("error","")})
+
+        return {
+            "status":  "done",
+            "placed":  placed,
+            "failed":  failed,
+            "signals": len(signals),
+            "results": results[:10],
+        }
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()}
+
 
 @app.get("/trade/test")
 def test_real_connection():
