@@ -296,11 +296,13 @@ async function loadSignals() {
 }
 
 function score(s) {
-  const q = (s.question || '').toLowerCase();
-  const nums = (q.match(/-?\d+\.?\d*/g) || []).map(Number).filter(n => n > -50 && n < 150);
-  const target = nums.length ? nums.reduce((a,b)=>a+b,0)/nums.length : 0;
-  const gap = Math.abs(target - (s.forecast||0));
-  return (10 - gap)*10 + (5 - s.days_out)*5 + (s.entry_price < 0.02 ? 3 : s.entry_price < 0.035 ? 2 : 1);
+  // Primary: model confidence score
+  // Secondary: days out (sooner = better)
+  // Tertiary: cheap price = bigger payout
+  const conf = s.confidence || 0;
+  const daysScore = Math.max(0, 5 - s.days_out) * 5;
+  const priceScore = s.entry_price < 0.02 ? 3 : s.entry_price < 0.035 ? 2 : 1;
+  return conf * 10 + daysScore + priceScore;
 }
 
 function getGap(s) {
@@ -356,8 +358,8 @@ function renderSignals() {
       </div>
       <div style="font-size:11px;color:#555;margin-bottom:8px">${modelText}</div>
       <div class="match-bar">
-        <div class="match-label"><span>Forecast Match</span><span style="color:${matchColor}">${match}%</span></div>
-        <div class="bar-track"><div class="bar-fill" style="width:${match}%"></div></div>
+        <div class="match-label"><span>Model Confidence</span><span style="color:${confColor}">${conf}%</span></div>
+        <div class="bar-track"><div class="bar-fill" style="width:${conf}%"></div></div>
       </div>
       <div class="action-row">
         <button class="buy-btn" onclick="window.open('${url}','_blank')">Buy YES →</button>
