@@ -43,8 +43,7 @@ def get_client():
         CLOB_BASE,
         key=key,
         chain_id=CHAIN_ID,
-        signature_type=1,   # MetaMask / browser wallet
-        funder=WALLET,      # Address holding the funds
+        signature_type=0,   # EOA/MetaMask — direct private key control
     )
     client.set_api_creds(client.create_or_derive_api_creds())
     return client
@@ -79,20 +78,32 @@ def place_real_order(market_id, question, city, yes_price):
         from py_clob_client.order_builder.constants import BUY
 
         client   = get_client()
+
+        # For EOA/MetaMask wallets use limit order not market order
+        # Market orders (FOK) often fail — limit orders at market price work better
         token_id = get_token_id(market_id)
 
         if not token_id:
             return {"success": False, "error": f"No token ID for market {market_id}"}
 
-        # Place market order — buys at best available price
-        mo     = MarketOrderArgs(
-            token_id   = token_id,
-            amount     = BET_SIZE,   # dollar amount to spend
-            side       = BUY,
-            order_type = OrderType.FOK,  # Fill or Kill — all or nothing
+        # Use limit order at current price — more reliable than FOK market orders
+        from py_clob_client.clob_types import OrderArgs
+        current_price = get_current_price(token_id) or yes_price
+        # Round to 2 decimal places as required by Polymarket
+        price  = round(current_price, 2)
+        # Calculate size in shares
+        size   = round(BET_SIZE / price, 1)
+        if size < 1:
+            size = 1.0
+
+        order_args = OrderArgs(
+            price    = price,
+            size     = size,
+            side     = BUY,
+            token_id = token_id,
         )
-        signed = client.create_market_order(mo)
-        resp   = client.post_order(signed, OrderType.FOK)
+        signed = client.create_order(order_args)
+        resp   = client.post_order(signed, OrderType.GTC)
 
         print(f"  [REAL ORDER] {city} | {question[:40]} | ${BET_SIZE} | {resp}")
 
