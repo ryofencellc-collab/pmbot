@@ -1,233 +1,572 @@
-"""
-backtest_early_entry.py
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PolyEdge — Live Signals</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0a0a0f; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
 
-Tests our ACTUAL strategy:
-- Markets open 4-7 days before resolution
-- Forecast range is cheap (under 5¢) at open
-- We buy it
-- Did it win?
+  header {
+    background: #12121a; border-bottom: 1px solid #222;
+    padding: 16px 24px; display: flex; align-items: center; justify-content: space-between;
+  }
+  header h1 { font-size: 20px; font-weight: 700; color: #fff; }
+  header h1 span { color: #7c6aff; }
 
-Uses our DB resolved markets + Open-Meteo historical temps
-as proxy for what forecast would have said.
-"""
+  .nav-tabs {
+    display: flex; background: #12121a; border-bottom: 1px solid #1e1e2e;
+    padding: 0 24px;
+  }
+  .nav-tab {
+    padding: 12px 20px; font-size: 14px; font-weight: 600;
+    cursor: pointer; color: #666; border-bottom: 2px solid transparent;
+    transition: all 0.2s;
+  }
+  .nav-tab.active { color: #7c6aff; border-bottom-color: #7c6aff; }
 
-import requests
-import re
-import time
-from datetime import date, timedelta
-from data.database import get_conn
+  .page { display: none; }
+  .page.active { display: block; }
 
-OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
+  .controls {
+    padding: 16px 24px; display: flex; gap: 12px;
+    align-items: center; flex-wrap: wrap; border-bottom: 1px solid #1a1a2a;
+  }
+  button {
+    background: #7c6aff; color: #fff; border: none;
+    padding: 10px 20px; border-radius: 8px; font-size: 14px;
+    font-weight: 600; cursor: pointer; transition: background 0.2s;
+  }
+  button:hover { background: #6a58e0; }
+  button:disabled { background: #333; color: #666; cursor: not-allowed; }
 
-CITY_COORDS = {
-    "London":        {"lat": 51.5074,  "lon": -0.1278,   "temp_unit": "celsius"},
-    "New York City": {"lat": 40.7128,  "lon": -74.0060,  "temp_unit": "fahrenheit"},
-    "NYC":           {"lat": 40.7128,  "lon": -74.0060,  "temp_unit": "fahrenheit"},
-    "Toronto":       {"lat": 43.6532,  "lon": -79.3832,  "temp_unit": "celsius"},
-    "Seoul":         {"lat": 37.5665,  "lon": 126.9780,  "temp_unit": "celsius"},
-    "Dallas":        {"lat": 32.7767,  "lon": -96.7970,  "temp_unit": "fahrenheit"},
-    "Atlanta":       {"lat": 33.7490,  "lon": -84.3880,  "temp_unit": "fahrenheit"},
-    "Paris":         {"lat": 48.8566,  "lon": 2.3522,    "temp_unit": "celsius"},
-    "Tokyo":         {"lat": 35.6762,  "lon": 139.6503,  "temp_unit": "celsius"},
-    "Singapore":     {"lat": 1.3521,   "lon": 103.8198,  "temp_unit": "celsius"},
-    "Madrid":        {"lat": 40.4168,  "lon": -3.7038,   "temp_unit": "celsius"},
-    "Warsaw":        {"lat": 52.2297,  "lon": 21.0122,   "temp_unit": "celsius"},
-    "Beijing":       {"lat": 39.9042,  "lon": 116.4074,  "temp_unit": "celsius"},
-    "Shanghai":      {"lat": 31.2304,  "lon": 121.4737,  "temp_unit": "celsius"},
-    "Taipei":        {"lat": 25.0330,  "lon": 121.5654,  "temp_unit": "celsius"},
-    "Tel Aviv":      {"lat": 32.0853,  "lon": 34.7818,   "temp_unit": "celsius"},
-    "Sao Paulo":     {"lat": -23.5505, "lon": -46.6333,  "temp_unit": "celsius"},
-    "Milan":         {"lat": 45.4642,  "lon": 9.1900,    "temp_unit": "celsius"},
-    "Munich":        {"lat": 48.1351,  "lon": 11.5820,   "temp_unit": "celsius"},
-    "Buenos Aires":  {"lat": -34.6037, "lon": -58.3816,  "temp_unit": "celsius"},
-    "Chicago":       {"lat": 41.8781,  "lon": -87.6298,  "temp_unit": "fahrenheit"},
-    "Seattle":       {"lat": 47.6062,  "lon": -122.3321, "temp_unit": "fahrenheit"},
-    "Miami":         {"lat": 25.7617,  "lon": -80.1918,  "temp_unit": "fahrenheit"},
+  .filter-tabs { display: flex; gap: 8px; }
+  .tab {
+    padding: 6px 14px; border-radius: 20px; font-size: 13px;
+    cursor: pointer; border: 1px solid #333; background: transparent;
+    color: #888; transition: all 0.2s;
+  }
+  .tab.active { background: #7c6aff; border-color: #7c6aff; color: #fff; }
+
+  .status-bar {
+    padding: 10px 24px; font-size: 12px; color: #666;
+    background: #0d0d14; border-bottom: 1px solid #1a1a2a;
+  }
+  .status-bar.loading { color: #7c6aff; }
+  .status-bar.error { color: #ff4444; }
+  .status-bar.ok { color: #44ff88; }
+
+  .summary { display: flex; gap: 12px; padding: 16px 24px; flex-wrap: wrap; }
+  .stat {
+    background: #12121a; border: 1px solid #1e1e2e;
+    border-radius: 10px; padding: 12px 18px; min-width: 110px;
+  }
+  .stat .label { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat .value { font-size: 20px; font-weight: 700; color: #fff; margin-top: 4px; }
+  .stat .value.green { color: #44ff88; }
+  .stat .value.purple { color: #7c6aff; }
+  .stat .value.yellow { color: #ffcc44; }
+  .stat .value.red { color: #ff4444; }
+  .stat .value.pink { color: #ff88cc; }
+
+  .section-title {
+    padding: 16px 24px 8px; font-size: 13px; font-weight: 600;
+    color: #666; text-transform: uppercase; letter-spacing: 1px;
+  }
+
+  .signals-grid {
+    padding: 0 24px 24px;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px;
+  }
+
+  .signal-card {
+    background: #12121a; border: 1px solid #1e1e2e;
+    border-radius: 12px; padding: 16px; transition: border-color 0.2s;
+  }
+  .signal-card:hover { border-color: #7c6aff; }
+  .signal-card.top { border-color: #44ff88; }
+
+  .card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
+  .city-name { font-size: 16px; font-weight: 700; color: #fff; }
+  .days-badge {
+    font-size: 11px; padding: 3px 8px; border-radius: 12px;
+    background: #1e1e2e; color: #888;
+  }
+  .days-badge.soon { background: #2a1a2a; color: #ff88cc; }
+  .question { font-size: 13px; color: #aaa; margin-bottom: 12px; line-height: 1.4; }
+
+  .metrics { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+  .metric { background: #0a0a0f; border-radius: 8px; padding: 8px; text-align: center; }
+  .metric .m-label { font-size: 10px; color: #555; text-transform: uppercase; }
+  .metric .m-value { font-size: 15px; font-weight: 700; margin-top: 2px; }
+  .metric .m-value.green { color: #44ff88; }
+  .metric .m-value.yellow { color: #ffcc44; }
+  .metric .m-value.blue { color: #44aaff; }
+
+  .match-bar { margin-bottom: 12px; }
+  .match-label {
+    font-size: 11px; color: #666; margin-bottom: 4px;
+    display: flex; justify-content: space-between;
+  }
+  .bar-track { height: 6px; background: #1e1e2e; border-radius: 3px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, #7c6aff, #44ff88); }
+
+  .action-row { display: flex; gap: 8px; align-items: center; }
+  .buy-btn {
+    flex: 1; padding: 8px; font-size: 13px; border-radius: 8px;
+    background: #1a2a1a; border: 1px solid #2a4a2a; color: #44ff88;
+    cursor: pointer; font-weight: 600; transition: all 0.2s;
+  }
+  .buy-btn:hover { background: #2a4a2a; }
+  .save-btn {
+    padding: 8px 12px; font-size: 12px; border-radius: 8px;
+    background: #1a1a2a; border: 1px solid #333; color: #7c6aff;
+    cursor: pointer; font-weight: 600; transition: all 0.2s;
+    white-space: nowrap;
+  }
+  .save-btn:hover { background: #2a2a3e; }
+  .save-btn.saved { background: #2a2a1a; border-color: #ffcc44; color: #ffcc44; }
+
+  /* Tracking table */
+  .track-table { margin: 0 24px 24px; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; padding: 10px 12px; color: #666; font-size: 11px; text-transform: uppercase; border-bottom: 1px solid #1e1e2e; }
+  td { padding: 10px 12px; border-bottom: 1px solid #1a1a2a; }
+  tr:hover td { background: #12121a; }
+  .pill {
+    display: inline-block; padding: 3px 10px; border-radius: 12px;
+    font-size: 11px; font-weight: 700;
+  }
+  .pill.yes { background: #1a3a1a; color: #44ff88; }
+  .pill.no { background: #3a1a1a; color: #ff4444; }
+  .pill.pending { background: #1a1a2a; color: #7c6aff; }
+
+  .empty-state { padding: 60px 24px; text-align: center; color: #444; grid-column: 1/-1; }
+  .empty-state .icon { font-size: 48px; margin-bottom: 16px; }
+
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #444; display:inline-block; }
+  .dot.live { background: #44ff88; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  .auto-row { display:flex; align-items:center; gap:8px; font-size:12px; color:#666; margin-left:auto; }
+
+  @media (max-width: 600px) {
+    .signals-grid { grid-template-columns: 1fr; padding: 0 12px 24px; }
+    .summary { padding: 12px; }
+    .controls { padding: 12px; }
+    header { padding: 12px; }
+    .track-table { margin: 0 12px 24px; }
+    .nav-tabs { padding: 0 12px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Poly<span>Edge</span> Signals</h1>
+  <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#666">
+    <div class="dot" id="liveDot"></div>
+    <span id="lastUpdated">Not loaded</span>
+  </div>
+</header>
+
+<div class="nav-tabs">
+  <div class="nav-tab active" onclick="showPage('signals', this)">📡 Live Signals</div>
+  <div class="nav-tab" onclick="showPage('tracking', this)">📊 Signal Tracker</div>
+  <div class="nav-tab" onclick="showPage('backtest', this)">🔬 Accuracy Test</div>
+</div>
+
+<!-- SIGNALS PAGE -->
+<div class="page active" id="page-signals">
+  <div class="controls">
+    <button id="refreshBtn" onclick="loadSignals()">🔄 Refresh</button>
+    <div class="filter-tabs">
+      <div class="tab active" onclick="setFilter('all',this)">All</div>
+      <div class="tab" onclick="setFilter('2',this)">2 Days</div>
+      <div class="tab" onclick="setFilter('3',this)">3 Days</div>
+      <div class="tab" onclick="setFilter('4',this)">4+ Days</div>
+    </div>
+    <div class="auto-row">
+      <input type="checkbox" id="autoRefresh" onchange="toggleAuto()">
+      <label for="autoRefresh">Auto 5min</label>
+    </div>
+  </div>
+
+  <div class="status-bar" id="statusBar">Click Refresh to load signals</div>
+
+  <div class="summary" id="summary" style="display:none">
+    <div class="stat"><div class="label">Signals</div><div class="value purple" id="statTotal">0</div></div>
+    <div class="stat"><div class="label">Best Win</div><div class="value green" id="statBest">—</div></div>
+    <div class="stat"><div class="label">Avg Price</div><div class="value yellow" id="statPrice">—</div></div>
+    <div class="stat"><div class="label">Cities</div><div class="value" id="statCities">0</div></div>
+    <div class="stat"><div class="label">Resolves Soon</div><div class="value pink" id="statSoon">0</div></div>
+  </div>
+
+  <div class="section-title" id="secTitle" style="display:none">🔥 Best Bets — Ranked by Forecast Match</div>
+  <div class="signals-grid" id="signalsGrid">
+    <div class="empty-state">
+      <div class="icon">📡</div>
+      <p>Hit Refresh to see today's best bets</p>
+    </div>
+  </div>
+</div>
+
+<!-- BACKTEST PAGE -->
+<div class="page" id="page-backtest">
+  <div class="controls">
+    <button onclick="runHondaBacktest(7)">Last 7 Days</button>
+    <button onclick="runHondaBacktest(14)" style="background:#1e1e2e;border:1px solid #333;color:#aaa">Last 14 Days</button>
+    <button onclick="runHondaBacktest(30)" style="background:#1e1e2e;border:1px solid #333;color:#aaa">Last 30 Days</button>
+  </div>
+  <div class="status-bar" id="btStatus">Click a button to run Honda strategy backtest</div>
+
+  <div style="padding:12px 24px;font-size:13px;color:#888;border-bottom:1px solid #1a1a2a">
+    Simulates: <span style="color:#44ff88">$10 forecast bets</span> (range where forecast lands, 10-60¢) 
+    + <span style="color:#ffcc44">$2 lottery bets</span> (extreme cheap ranges under 5¢)
+  </div>
+
+  <div class="summary" id="btSummary" style="display:none">
+    <div class="stat"><div class="label">Forecast Bets</div><div class="value purple" id="btFBets">0</div></div>
+    <div class="stat"><div class="label">Forecast Win%</div><div class="value yellow" id="btFRate">—</div></div>
+    <div class="stat"><div class="label">Forecast P&L</div><div class="value green" id="btFPnl">$0</div></div>
+    <div class="stat"><div class="label">Lottery Wins</div><div class="value green" id="btLWins">0</div></div>
+    <div class="stat"><div class="label">Lottery P&L</div><div class="value green" id="btLPnl">$0</div></div>
+    <div class="stat"><div class="label">Daily Avg</div><div class="value green" id="btDaily">$0</div></div>
+  </div>
+
+  <div class="section-title" id="btTitle" style="display:none">📋 Forecast Bet Results</div>
+  <div class="track-table">
+    <table id="btTable" style="display:none">
+      <thead>
+        <tr><th>Date</th><th>City</th><th>Question</th><th>Price</th><th>Gap</th><th>Outcome</th><th>P&L</th></tr>
+      </thead>
+      <tbody id="btBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- TRACKING PAGE -->
+<div class="page" id="page-tracking">
+  <div class="controls">
+    <button onclick="loadTracked()">🔄 Refresh Tracker</button>
+  </div>
+
+  <div class="summary" id="trackSummary" style="display:none">
+    <div class="stat"><div class="label">Tracked</div><div class="value purple" id="tTotal">0</div></div>
+    <div class="stat"><div class="label">Wins</div><div class="value green" id="tWins">0</div></div>
+    <div class="stat"><div class="label">Win Rate</div><div class="value yellow" id="tRate">—</div></div>
+    <div class="stat"><div class="label">Total P&L</div><div class="value green" id="tPnl">$0</div></div>
+    <div class="stat"><div class="label">Pending</div><div class="value" id="tPending">0</div></div>
+  </div>
+
+  <div class="section-title">📋 All Tracked Signals</div>
+  <div class="track-table">
+    <table id="trackTable">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>City</th>
+          <th>Question</th>
+          <th>Price</th>
+          <th>Forecast</th>
+          <th>Days</th>
+          <th>Outcome</th>
+          <th>P&L</th>
+        </tr>
+      </thead>
+      <tbody id="trackBody">
+        <tr><td colspan="8" style="text-align:center;color:#444;padding:40px">No tracked signals yet — save signals from the Live tab</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+let allSignals = [];
+let savedIds = new Set(JSON.parse(localStorage.getItem('savedIds') || '[]'));
+let currentFilter = 'all';
+let autoTimer = null;
+
+function showPage(name, el) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  el.classList.add('active');
+  if (name === 'tracking') loadTracked();
 }
 
-temp_cache = {}
+async function loadSignals() {
+  const btn = document.getElementById('refreshBtn');
+  const status = document.getElementById('statusBar');
+  const dot = document.getElementById('liveDot');
 
-def get_actual_temp(city, date_str):
-    key = f"{city}_{date_str}"
-    if key in temp_cache:
-        return temp_cache[key]
-    coords = CITY_COORDS.get(city)
-    if not coords:
-        return None
-    try:
-        r = requests.get(OPEN_METEO, params={
-            "latitude":         coords["lat"],
-            "longitude":        coords["lon"],
-            "daily":            "temperature_2m_max",
-            "temperature_unit": coords["temp_unit"],
-            "timezone":         "auto",
-            "start_date":       date_str,
-            "end_date":         date_str,
-        }, timeout=10)
-        if r.status_code == 200:
-            temps = r.json().get("daily", {}).get("temperature_2m_max", [])
-            if temps and temps[0] is not None:
-                temp_cache[key] = float(temps[0])
-                return temp_cache[key]
-    except Exception:
-        pass
-    return None
+  btn.disabled = true;
+  btn.textContent = '⏳ Loading...';
+  status.className = 'status-bar loading';
+  status.textContent = 'Fetching signals from Polymarket...';
+  dot.className = 'dot';
 
+  try {
+    const res = await fetch('/early-signals');
+    const data = await res.json();
+    allSignals = (data.signals || []).sort((a, b) => score(b) - score(a));
 
-def get_range_midpoint(question):
-    q = question.lower()
-    nums = [float(x) for x in re.findall(r'-?\d+\.?\d*', q)
-            if -60 < float(x) < 200]
-    if not nums:
-        return None
-    if "or below" in q:
-        return nums[0] - 3
-    if "or higher" in q:
-        return nums[0] + 3
-    if "between" in q and len(nums) >= 2:
-        return (nums[0] + nums[1]) / 2
-    return nums[0]
+    const now = new Date().toLocaleTimeString();
+    document.getElementById('lastUpdated').textContent = `${now}`;
+    dot.className = 'dot live';
+    status.className = 'status-bar ok';
+    status.textContent = `✅ ${allSignals.length} signals — ${now}`;
 
+    renderSignals();
+    renderSummary();
+    document.getElementById('summary').style.display = 'flex';
+    document.getElementById('secTitle').style.display = 'block';
+  } catch(e) {
+    status.className = 'status-bar error';
+    status.textContent = '❌ Failed to load — check app health';
+  }
+  btn.disabled = false;
+  btn.textContent = '🔄 Refresh';
+}
 
-def run_backtest(days_back=30, entry_price_max=0.05, forecast_window=2):
-    """
-    Backtest early entry strategy.
-    
-    Simulates: 4-7 days before resolution, our app sees a market
-    where the actual temperature (proxy for forecast) is within
-    forecast_window degrees of the range, and price is under
-    entry_price_max. Did we win?
-    """
-    conn = get_conn()
-    c    = conn.cursor()
+function score(s) {
+  // Primary: model confidence score
+  // Secondary: days out (sooner = better)
+  // Tertiary: cheap price = bigger payout
+  const conf = s.confidence || 0;
+  const daysScore = Math.max(0, 5 - s.days_out) * 5;
+  const priceScore = s.entry_price < 0.02 ? 3 : s.entry_price < 0.035 ? 2 : 1;
+  return conf * 10 + daysScore + priceScore;
+}
 
-    cutoff = (date.today() - timedelta(days=days_back)).isoformat()
+function getGap(s) {
+  const q = (s.question || '').toLowerCase();
+  const nums = (q.match(/-?\d+\.?\d*/g) || []).map(Number).filter(n => n > -50 && n < 150);
+  const target = nums.length ? nums.reduce((a,b)=>a+b,0)/nums.length : 0;
+  return Math.abs(target - (s.forecast||0));
+}
 
-    # Get resolved markets — only ones that opened early (created_at is 4+ days before resolved_at)
-    c.execute("""
-        SELECT id, question, city, target_low, target_high, market_type,
-               unit, outcome, last_trade_price,
-               TO_CHAR(TO_TIMESTAMP(resolved_at), 'YYYY-MM-DD') as res_date,
-               TO_CHAR(TO_TIMESTAMP(created_at), 'YYYY-MM-DD') as open_date,
-               (resolved_at - created_at) / 86400 as days_open
-        FROM markets
-        WHERE outcome IN ('Yes', 'No')
-        AND TO_TIMESTAMP(resolved_at)::date >= %s::date
-        AND last_trade_price > 0
-        AND last_trade_price <= %s
-        AND (resolved_at - created_at) >= %s
-        ORDER BY resolved_at DESC
-        LIMIT 1000
-    """, (cutoff, entry_price_max, 3 * 86400))  # at least 3 days open
+function setFilter(val, el) {
+  currentFilter = val;
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  renderSignals();
+}
 
-    markets = [dict(r) for r in c.fetchall()]
-    conn.close()
+function renderSignals() {
+  const grid = document.getElementById('signalsGrid');
+  let list = allSignals;
+  if (currentFilter === '2') list = list.filter(s => s.days_out <= 2);
+  else if (currentFilter === '3') list = list.filter(s => s.days_out === 3);
+  else if (currentFilter === '4') list = list.filter(s => s.days_out >= 4);
 
-    print(f"\nFound {len(markets)} markets matching entry criteria")
-    print(f"(price <= {entry_price_max*100:.0f}¢, open 3+ days, last {days_back} days)")
+  if (!list.length) {
+    grid.innerHTML = '<div class="empty-state"><div class="icon">🔍</div><p>No signals for this filter</p></div>';
+    return;
+  }
 
-    wins        = []
-    losses      = []
-    skipped     = 0
-    city_stats  = {}
+  grid.innerHTML = list.map((s, i) => {
+    const isTop = i < 3;
+    const soon = s.days_out <= 2;
+    const win = (10 / s.entry_price).toFixed(0);
+    const pct = (s.entry_price * 100).toFixed(1);
+    const gap = getGap(s);
+    const match = Math.max(0, Math.min(100, (1 - gap/10)*100)).toFixed(0);
+    const matchColor = match > 70 ? '#44ff88' : match > 40 ? '#ffcc44' : '#ff6644';
+    const conf = s.confidence || match;
+    const confColor = conf > 70 ? 'green' : conf > 40 ? 'yellow' : 'blue';
+    const modelText = s.models ? `Models: ${s.models}` : `Forecast: ${s.forecast}°`;
+    const isSaved = savedIds.has(s.market_id);
+    const url = `https://polymarket.com/event/${s.market_id}`;
 
-    for m in markets:
-        city     = m["city"]
-        date_str = m["res_date"]
-        price    = float(m["last_trade_price"])
-        outcome  = m["outcome"]
-        question = m["question"]
+    return `<div class="signal-card ${isTop?'top':''}">
+      <div class="card-header">
+        <div class="city-name">${s.city}</div>
+        <div class="days-badge ${soon?'soon':''}">${s.days_out}d${isTop?' 🔥':''}</div>
+      </div>
+      <div class="question">${s.question}</div>
+      <div class="metrics">
+        <div class="metric"><div class="m-label">Price</div><div class="m-value yellow">${pct}¢</div></div>
+        <div class="metric"><div class="m-label">Win/$10</div><div class="m-value green">$${win}</div></div>
+        <div class="metric"><div class="m-label">Confidence</div><div class="m-value ${confColor}">${conf}%</div></div>
+      </div>
+      <div style="font-size:11px;color:#555;margin-bottom:8px">${modelText}</div>
+      <div class="match-bar">
+        <div class="match-label"><span>Model Confidence</span><span style="color:${confColor}">${conf}%</span></div>
+        <div class="bar-track"><div class="bar-fill" style="width:${conf}%"></div></div>
+      </div>
+      <div class="action-row">
+        <button class="buy-btn" onclick="window.open('${url}','_blank')">Buy YES →</button>
+        <button class="save-btn ${isSaved?'saved':''}" id="save-${s.market_id}" 
+          data-mid="${s.market_id}" data-city="${s.city}" 
+          data-q="${(s.question||'').replace(/"/g,'').replace(/'/g,'')}"
+          data-price="${s.entry_price}" data-forecast="${s.forecast||0}" 
+          data-days="${s.days_out}"
+          onclick="saveSignalFromBtn(this)">
+          ${isSaved ? '✓ Saved' : '+ Track'}
+        </button>
+      </div>
+    </div>`;
+  }).join('');
+}
 
-        actual = get_actual_temp(city, date_str)
-        if actual is None:
-            skipped += 1
-            continue
+function renderSummary() {
+  document.getElementById('statTotal').textContent = allSignals.length;
+  const best = Math.max(...allSignals.map(s => 10/s.entry_price));
+  document.getElementById('statBest').textContent = `$${best.toFixed(0)}`;
+  const avg = allSignals.reduce((a,s)=>a+s.entry_price,0)/allSignals.length;
+  document.getElementById('statPrice').textContent = `${(avg*100).toFixed(1)}¢`;
+  document.getElementById('statCities').textContent = new Set(allSignals.map(s=>s.city)).size;
+  document.getElementById('statSoon').textContent = allSignals.filter(s=>s.days_out<=2).length;
+}
 
-        mid = get_range_midpoint(question)
-        if mid is None:
-            continue
+async function saveSignalFromBtn(btn) {
+  const s = {
+    market_id: btn.dataset.mid,
+    city:       btn.dataset.city,
+    question:   btn.dataset.q,
+    entry_price: parseFloat(btn.dataset.price),
+    forecast:   parseFloat(btn.dataset.forecast),
+    days_out:   parseInt(btn.dataset.days),
+  };
+  await saveSignal(s);
+}
 
-        gap = abs(mid - actual)
+async function saveSignal(s) {
+  if (savedIds.has(s.market_id)) return;
+  try {
+    const params = new URLSearchParams({
+      market_id: s.market_id, city: s.city, question: s.question,
+      entry_price: s.entry_price, forecast: s.forecast || 0, days_out: s.days_out
+    });
+    await fetch('/signals/save?' + params);
+    savedIds.add(s.market_id);
+    localStorage.setItem('savedIds', JSON.stringify([...savedIds]));
+    const btn = document.getElementById('save-' + s.market_id);
+    if (btn) { btn.textContent = '✓ Saved'; btn.classList.add('saved'); }
+  } catch(e) { alert('Save failed'); }
+}
 
-        # Only count if forecast would have matched (within window)
-        if gap > forecast_window:
-            continue
+async function loadTracked() {
+  try {
+    const res = await fetch('/signals/tracked');
+    const data = await res.json();
 
-        # This is a bet we would have made
-        bet_size = 10.0
-        if outcome == "Yes":
-            pnl = round((1.0 / price) * bet_size - bet_size, 2)
-            wins.append({
-                "city": city, "date": date_str,
-                "question": question[:55], "price": round(price*100,1),
-                "actual": actual, "gap": round(gap,1),
-                "outcome": outcome, "pnl": pnl,
-                "days_open": m.get("days_open", 0)
-            })
-        else:
-            pnl = -bet_size
-            losses.append({
-                "city": city, "date": date_str,
-                "question": question[:55], "price": round(price*100,1),
-                "actual": actual, "gap": round(gap,1),
-                "outcome": outcome, "pnl": pnl,
-                "days_open": m.get("days_open", 0)
-            })
-
-        # City stats
-        if city not in city_stats:
-            city_stats[city] = {"wins": 0, "losses": 0, "pnl": 0}
-        if outcome == "Yes":
-            city_stats[city]["wins"] += 1
-            city_stats[city]["pnl"] += pnl
-        else:
-            city_stats[city]["losses"] += 1
-            city_stats[city]["pnl"] -= bet_size
-
-    all_bets  = wins + losses
-    total_pnl = sum(b["pnl"] for b in all_bets)
-    spent     = len(all_bets) * 10.0
-    win_rate  = round(len(wins)/len(all_bets)*100, 1) if all_bets else 0
-    roi       = round(total_pnl/spent*100, 1) if spent > 0 else 0
-
-    print(f"\n{'='*55}")
-    print(f"  EARLY ENTRY BACKTEST — Last {days_back} days")
-    print(f"  Entry: under {entry_price_max*100:.0f}¢, within {forecast_window}° of forecast")
-    print(f"{'='*55}")
-    print(f"  Total bets:   {len(all_bets)}")
-    print(f"  Wins:         {len(wins)}")
-    print(f"  Losses:       {len(losses)}")
-    print(f"  Win rate:     {win_rate}%")
-    print(f"  Total spent:  ${spent:.2f}")
-    print(f"  Total P&L:    ${total_pnl:+.2f}")
-    print(f"  ROI:          {roi:+.1f}%")
-    print(f"  Daily avg:    ${total_pnl/days_back:+.2f}/day")
-    print(f"  Skipped:      {skipped} (no temp data)")
-
-    print(f"\n  TOP WINS:")
-    for b in sorted(wins, key=lambda x: -x["pnl"])[:10]:
-        print(f"    {b['city']} {b['date']} | {b['question'][:40]} | {b['price']}¢ | +${b['pnl']:.2f}")
-
-    print(f"\n  CITY BREAKDOWN:")
-    for city, s in sorted(city_stats.items(), key=lambda x: -x[1]["pnl"])[:10]:
-        total = s["wins"] + s["losses"]
-        wr = round(s["wins"]/total*100) if total > 0 else 0
-        print(f"    {city:<15} {s['wins']}W/{s['losses']}L ({wr}%) P&L=${s['pnl']:+.2f}")
-
-    return {
-        "days":       days_back,
-        "total_bets": len(all_bets),
-        "wins":       len(wins),
-        "losses":     len(losses),
-        "win_rate":   win_rate,
-        "total_pnl":  round(total_pnl, 2),
-        "daily_avg":  round(total_pnl/days_back, 2),
-        "roi":        roi,
-        "top_wins":   sorted(wins, key=lambda x: -x["pnl"])[:10],
-        "city_stats": city_stats,
+    if (data.total !== undefined) {
+      document.getElementById('trackSummary').style.display = 'flex';
+      document.getElementById('tTotal').textContent = data.total;
+      document.getElementById('tWins').textContent = data.wins;
+      document.getElementById('tRate').textContent = data.win_rate + '%';
+      const pnl = data.total_pnl;
+      const pnlEl = document.getElementById('tPnl');
+      pnlEl.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
+      pnlEl.className = 'value ' + (pnl >= 0 ? 'green' : 'red');
+      document.getElementById('tPending').textContent = data.pending;
     }
 
+    const tbody = document.getElementById('trackBody');
+    if (!data.signals || !data.signals.length) {
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#444;padding:40px">No tracked signals yet</td></tr>';
+      return;
+    }
 
-if __name__ == '__main__':
-    # Test with different windows
-    result = run_backtest(days_back=30, entry_price_max=0.05, forecast_window=2)
+    tbody.innerHTML = data.signals.map(s => {
+      const outcome = s.outcome;
+      const pill = outcome === 'Yes' ? '<span class="pill yes">WIN ✓</span>'
+                 : outcome === 'No' ? '<span class="pill no">LOSS ✗</span>'
+                 : '<span class="pill pending">Pending</span>';
+      const pnl = s.pnl != null ? (s.pnl > 0 ? `<span style="color:#44ff88">+$${s.pnl.toFixed(2)}</span>` : `<span style="color:#ff4444">-$${Math.abs(s.pnl).toFixed(2)}</span>`) : '—';
+      return `<tr>
+        <td style="color:#666">${s.saved_at}</td>
+        <td style="font-weight:600">${s.city}</td>
+        <td style="color:#aaa;max-width:200px;font-size:12px">${s.question}</td>
+        <td style="color:#ffcc44">${(s.entry_price*100).toFixed(1)}¢</td>
+        <td style="color:#44aaff">${s.forecast || '—'}°</td>
+        <td>${s.days_out}d</td>
+        <td>${pill}</td>
+        <td>${pnl}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) {
+    document.getElementById('trackBody').innerHTML = '<tr><td colspan="8" style="color:#ff4444;padding:20px">Error loading tracker</td></tr>';
+  }
+}
+
+function toggleAuto() {
+  clearInterval(autoTimer);
+  if (document.getElementById('autoRefresh').checked) {
+    autoTimer = setInterval(loadSignals, 5*60*1000);
+  }
+}
+
+async function runHondaBacktest(days) {
+  const status = document.getElementById('btStatus');
+  status.className = 'status-bar loading';
+  status.textContent = `Running Honda strategy backtest over ${days} days... (30-60 seconds)`;
+  document.getElementById('btSummary').style.display = 'none';
+  document.getElementById('btTable').style.display = 'none';
+  document.getElementById('btTitle').style.display = 'none';
+
+  try {
+    const res = await fetch(`/backtest/honda?days=${days}`);
+    const data = await res.json();
+
+    if (data.status === 'error') {
+      status.className = 'status-bar error';
+      status.textContent = '❌ Error: ' + data.message;
+      return;
+    }
+
+    status.className = 'status-bar ok';
+    status.textContent = `✅ Done — ${data.forecast.bets} forecast bets + ${data.lottery.bets} lottery bets simulated`;
+
+    document.getElementById('btSummary').style.display = 'flex';
+    document.getElementById('btFBets').textContent = data.forecast.bets;
+    document.getElementById('btFRate').textContent = data.forecast.win_rate + '%';
+
+    const fp = data.forecast.total_pnl;
+    const fpEl = document.getElementById('btFPnl');
+    fpEl.textContent = (fp >= 0 ? '+$' : '-$') + Math.abs(fp).toFixed(2);
+    fpEl.className = 'value ' + (fp >= 0 ? 'green' : 'red');
+
+    document.getElementById('btLWins').textContent = data.lottery.wins;
+
+    const lp = data.lottery.total_pnl;
+    const lpEl = document.getElementById('btLPnl');
+    lpEl.textContent = (lp >= 0 ? '+$' : '-$') + Math.abs(lp).toFixed(2);
+    lpEl.className = 'value ' + (lp >= 0 ? 'green' : 'red');
+
+    const dp = data.combined.daily_avg;
+    const dpEl = document.getElementById('btDaily');
+    dpEl.textContent = (dp >= 0 ? '+$' : '-$') + Math.abs(dp).toFixed(2) + '/day';
+    dpEl.className = 'value ' + (dp >= 0 ? 'green' : 'red');
+
+    if (data.forecast.results && data.forecast.results.length) {
+      document.getElementById('btTitle').style.display = 'block';
+      document.getElementById('btTable').style.display = 'table';
+      document.getElementById('btBody').innerHTML = data.forecast.results.map(r => {
+        const win = r.outcome === 'Yes';
+        const pill = win ? '<span class="pill yes">WIN ✓</span>' : '<span class="pill no">LOSS ✗</span>';
+        const pnl = win ? `<span style="color:#44ff88">+$${r.pnl.toFixed(2)}</span>` : `<span style="color:#ff4444">-$${Math.abs(r.pnl).toFixed(2)}</span>`;
+        return `<tr>
+          <td style="color:#666">${r.date}</td>
+          <td style="font-weight:600">${r.city}</td>
+          <td style="color:#aaa;font-size:12px">${r.question}</td>
+          <td style="color:#ffcc44">${r.price}¢</td>
+          <td style="color:#44aaff">${r.gap}°</td>
+          <td>${pill}</td>
+          <td>${pnl}</td>
+        </tr>`;
+      }).join('');
+    }
+  } catch(e) {
+    status.className = 'status-bar error';
+    status.textContent = '❌ Failed to run backtest';
+  }
+}
+
+loadSignals();
+</script>
+</body>
+</html>
