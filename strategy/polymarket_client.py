@@ -1,11 +1,10 @@
 """
 polymarket_client.py - Real money trading on Polymarket CLOB API.
 
-Uses py-clob-client (official Polymarket Python library) for auth and trading.
-MetaMask wallets require signature_type=1 and funder address.
+Uses py-clob-client with signature_type=0 for MetaMask/EOA wallets.
 
-Railway environment variables required:
-  POLYMARKET_PRIVATE_KEY = MetaMask private key (with 0x prefix)
+Railway environment variables:
+  POLYMARKET_PRIVATE_KEY = MetaMask private key (with or without 0x)
   POLYMARKET_WALLET      = MetaMask wallet address (0x...)
   TRADING_MODE           = "real" or "paper"
   BET_SIZE_REAL          = bet size in dollars (default: 1.0)
@@ -18,7 +17,7 @@ import requests
 
 CLOB_BASE    = "https://clob.polymarket.com"
 GAMMA_BASE   = "https://gamma-api.polymarket.com"
-CHAIN_ID     = 137  # Polygon mainnet
+CHAIN_ID     = 137
 
 PRIVATE_KEY  = os.getenv("POLYMARKET_PRIVATE_KEY", "")
 WALLET       = os.getenv("POLYMARKET_WALLET", "")
@@ -30,32 +29,32 @@ def is_real_mode():
     return TRADING_MODE == "real" and bool(PRIVATE_KEY) and bool(WALLET)
 
 
-def get_client():
-    """Get authenticated py-clob-client instance."""
-    from py_clob_client.client import ClobClient
-
-    # Remove 0x prefix — py-clob-client expects key without it
-    key = PRIVATE_KEY
+def _clean_key(key):
+    """Remove 0x prefix — py-clob-client expects raw hex key."""
     if key.startswith("0x") or key.startswith("0X"):
-        key = key[2:]
+        return key[2:]
+    return key
 
+
+def get_client():
+    """Get authenticated ClobClient for MetaMask/EOA wallet."""
+    from py_clob_client.client import ClobClient
     client = ClobClient(
         CLOB_BASE,
-        key=key,
+        key=_clean_key(PRIVATE_KEY),
         chain_id=CHAIN_ID,
-        signature_type=0,   # EOA/MetaMask — direct private key control
+        signature_type=0,  # EOA/MetaMask — direct private key, no proxy
     )
     client.set_api_creds(client.create_or_derive_api_creds())
     return client
 
 
 def get_token_id(market_id):
-    """Get CLOB token ID for a market's YES outcome."""
+    """Get CLOB YES token ID for a market."""
     try:
         r = requests.get(f"{GAMMA_BASE}/markets/{market_id}", timeout=15)
         if r.status_code == 200:
-            data   = r.json()
-            tokens = data.get("clobTokenIds")
+            tokens = r.json().get("clobTokenIds")
             if isinstance(tokens, str):
                 tokens = json.loads(tokens)
             return tokens[0] if tokens else None
@@ -66,79 +65,74 @@ def get_token_id(market_id):
 
 def place_real_order(market_id, question, city, yes_price):
     """
-    Place a real money market order on Polymarket.
-    Returns dict with success status and details.
+    Place a real GTC limit order on Polymarket.
+    Returns dict with success/error.
     """
     if not is_real_mode():
         return {"success": False, "error": "Not in real mode"}
 
     try:
-        from py_clob_client.client import ClobClient
-        from py_clob_client.clob_types import MarketOrderArgs, OrderType
+        from py_clob_client.clob_types import OrderArgs, OrderType
         from py_clob_client.order_builder.constants import BUY
 
-        client   = get_client()
-
-        # For EOA/MetaMask wallets use limit order not market order
-        # Market orders (FOK) often fail — limit orders at market price work better
         token_id = get_token_id(market_id)
-
         if not token_id:
             return {"success": False, "error": f"No token ID for market {market_id}"}
 
-        # Use limit order at current price — more reliable than FOK market orders
-        from py_clob_client.clob_types import OrderArgs
-        current_price = get_current_price(token_id) or yes_price
-        # Round to 2 decimal places as required by Polymarket
-        price  = round(current_price, 2)
-        # Calculate size in shares
-        size   = round(BET_SIZE / price, 1)
-        if size < 1:
-            size = 1.0
+        client = get_client()
+
+        # Price must be a clean decimal with max 4 decimal places
+        price = round(float(yes_price), 4)
+        if price <= 0 or price >= 1:
+            return {"success": False, "error": f"Invalid price: {price}"}
+
+        # Size = number of shares = dollar amount / price per share
+        # Minimum order size on Polymarket is 5 shares
+        size = round(BET_SIZE / price)
+        if size < 5:
+            size = 5
 
         order_args = OrderArgs(
             price    = price,
-            size     = size,
+            size     = float(size),
             side     = BUY,
             token_id = token_id,
         )
         signed = client.create_order(order_args)
         resp   = client.post_order(signed, OrderType.GTC)
 
-        print(f"  [REAL ORDER] {city} | {question[:40]} | ${BET_SIZE} | {resp}")
+        print(f"  [ORDER] {city} | {question[:40]} | price={price} size={size} | {resp}")
 
         if resp and resp.get("success"):
             return {
-                "success":   True,
-                "order_id":  resp.get("orderID", ""),
+                "success":  True,
+                "order_id": resp.get("orderID", ""),
                 "market_id": market_id,
-                "city":      city,
-                "question":  question,
-                "bet_size":  BET_SIZE,
-                "mode":      "REAL",
-                "response":  resp,
+                "city":     city,
+                "question": question,
+                "price":    price,
+                "size":     size,
+                "bet_size": BET_SIZE,
+                "mode":     "REAL",
             }
         else:
             return {"success": False, "error": str(resp)}
 
     except ImportError:
-        return {"success": False, "error": "py-clob-client not installed — check requirements.txt"}
+        return {"success": False, "error": "py-clob-client not installed"}
     except Exception as e:
         import traceback
-        return {"success": False, "error": str(e), "trace": traceback.format_exc()}
+        return {"success": False, "error": str(e), "trace": traceback.format_exc()[:500]}
 
 
 def test_connection():
-    """Test credentials without placing a real order."""
+    """Test credentials without placing any order."""
     if not PRIVATE_KEY or not WALLET:
-        return {"status": "error", "message": "POLYMARKET_PRIVATE_KEY or POLYMARKET_WALLET not set"}
-
+        return {"status": "error", "message": "Missing POLYMARKET_PRIVATE_KEY or POLYMARKET_WALLET"}
     if not is_real_mode():
-        return {"status": "paper", "message": "TRADING_MODE is not 'real' — paper trading only"}
-
+        return {"status": "paper", "message": "TRADING_MODE is not 'real'"}
     try:
         client = get_client()
-        # Simple test — get server time (no auth needed but confirms client init worked)
         ok = client.get_ok()
         return {
             "status":   "connected",
@@ -149,12 +143,11 @@ def test_connection():
             "server":   ok,
         }
     except ImportError:
-        return {"status": "error", "message": "py-clob-client not installed — check requirements.txt"}
+        return {"status": "error", "message": "py-clob-client not installed"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
 
 if __name__ == "__main__":
     print("Testing Polymarket connection...")
-    result = test_connection()
-    print(json.dumps(result, indent=2))
+    print(json.dumps(test_connection(), indent=2))
