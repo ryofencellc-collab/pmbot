@@ -383,7 +383,7 @@ async function saveSignal(s) {
       market_id: s.market_id, city: s.city, question: s.question,
       entry_price: s.entry_price, forecast: s.forecast || 0, days_out: s.days_out
     });
-    await fetch('/signals/save?' + params, {method:'POST'});
+    await fetch('/signals/save?' + params);
     savedIds.add(s.market_id);
     localStorage.setItem('savedIds', JSON.stringify([...savedIds]));
     const btn = document.getElementById('save-' + s.market_id);
