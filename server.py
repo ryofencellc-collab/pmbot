@@ -753,6 +753,161 @@ def get_tracked_signals():
         return {"status": "error", "message": str(e)}
 
 
+# ── Accuracy Backtest ─────────────────────────────────────────────────────
+
+@app.get("/backtest/accuracy")
+def backtest_accuracy(days: int = 7):
+    """
+    Backtest signal accuracy over the last N days.
+    Uses historical Open-Meteo data to simulate what our signals would have been,
+    then checks actual market outcomes to see win/loss rate.
+    """
+    import requests as req
+    from datetime import date, timedelta
+    import re
+
+    try:
+        conn = get_conn()
+        c    = conn.cursor()
+
+        # Get all resolved markets from last N days
+        cutoff = (date.today() - timedelta(days=days)).isoformat()
+        c.execute("""
+            SELECT m.id, m.question, m.city, m.target_low, m.target_high,
+                   m.market_type, m.unit, m.outcome, m.last_trade_price,
+                   TO_TIMESTAMP(m.resolved_at) as resolved_date
+            FROM markets m
+            WHERE m.outcome IN ('Yes', 'No')
+            AND TO_TIMESTAMP(m.resolved_at)::date >= %s::date
+            AND m.last_trade_price > 0
+            AND m.last_trade_price <= 0.05
+            ORDER BY m.resolved_at DESC
+            LIMIT 200
+        """, (cutoff,))
+        markets = [dict(r) for r in c.fetchall()]
+        conn.close()
+
+        if not markets:
+            return {"status": "no_data", "message": "No resolved markets found in last 7 days"}
+
+        # City coordinates for historical forecast lookup
+        CITY_COORDS = {
+            "London":       {"lat": 51.5074,  "lon": -0.1278,   "temp_unit": "celsius"},
+            "NYC":          {"lat": 40.7128,  "lon": -74.0060,  "temp_unit": "fahrenheit"},
+            "Toronto":      {"lat": 43.6532,  "lon": -79.3832,  "temp_unit": "celsius"},
+            "Paris":        {"lat": 48.8566,  "lon": 2.3522,    "temp_unit": "celsius"},
+            "Dallas":       {"lat": 32.7767,  "lon": -96.7970,  "temp_unit": "fahrenheit"},
+            "Atlanta":      {"lat": 33.7490,  "lon": -84.3880,  "temp_unit": "fahrenheit"},
+            "Seattle":      {"lat": 47.6062,  "lon": -122.3321, "temp_unit": "fahrenheit"},
+            "Miami":        {"lat": 25.7617,  "lon": -80.1918,  "temp_unit": "fahrenheit"},
+            "Chicago":      {"lat": 41.8781,  "lon": -87.6298,  "temp_unit": "fahrenheit"},
+            "New York City":{"lat": 40.7128,  "lon": -74.0060,  "temp_unit": "fahrenheit"},
+        }
+
+        results    = []
+        would_bet  = 0
+        would_win  = 0
+        would_lose = 0
+        total_pnl  = 0.0
+
+        for m in markets[:50]:  # limit to 50 for speed
+            city   = m.get("city", "")
+            coords = CITY_COORDS.get(city)
+            if not coords:
+                continue
+
+            # Get resolved date
+            res_date = m["resolved_date"]
+            if hasattr(res_date, 'date'):
+                res_date = res_date.date()
+            date_str = str(res_date)[:10]
+
+            # Get historical actual temperature from Open-Meteo
+            try:
+                r = req.get("https://api.open-meteo.com/v1/forecast", params={
+                    "latitude":         coords["lat"],
+                    "longitude":        coords["lon"],
+                    "daily":            "temperature_2m_max",
+                    "temperature_unit": coords["temp_unit"],
+                    "timezone":         "auto",
+                    "start_date":       date_str,
+                    "end_date":         date_str,
+                    "models":           "gfs_global",
+                }, timeout=10)
+                if r.status_code != 200:
+                    continue
+                temps = r.json().get("daily", {}).get("temperature_2m_max", [])
+                if not temps or temps[0] is None:
+                    continue
+                actual_temp = float(temps[0])
+            except Exception:
+                continue
+
+            # Would our signal have selected this market?
+            # Check if actual_temp is within FORECAST_WINDOW of market target
+            target_low  = m["target_low"]
+            target_high = m["target_high"]
+            market_type = m["market_type"]
+            WINDOW = 4
+
+            if market_type == "exact":
+                in_window = abs(actual_temp - target_low) <= WINDOW
+            elif market_type == "range":
+                mid = (target_low + target_high) / 2
+                in_window = abs(mid - actual_temp) <= WINDOW
+            elif market_type == "above":
+                in_window = actual_temp >= target_low - WINDOW
+            elif market_type == "below":
+                in_window = actual_temp <= target_high + WINDOW
+            else:
+                in_window = False
+
+            if not in_window:
+                continue
+
+            # We would have bet on this
+            would_bet += 1
+            price  = float(m["last_trade_price"])
+            outcome = m["outcome"]
+
+            if outcome == "Yes":
+                would_win += 1
+                pnl = round((1.0 / price) * 1.0 - 1.0, 2)
+                total_pnl += pnl
+            else:
+                would_lose += 1
+                pnl = -1.0
+                total_pnl += pnl
+
+            results.append({
+                "city":     city,
+                "question": m["question"][:60],
+                "date":     date_str,
+                "price":    round(price * 100, 1),
+                "actual_temp": actual_temp,
+                "outcome":  outcome,
+                "pnl":      round(pnl, 2),
+            })
+
+        win_rate = round(would_win / would_bet * 100, 1) if would_bet > 0 else 0
+
+        return {
+            "days":        days,
+            "markets_checked": len(markets),
+            "would_have_bet":  would_bet,
+            "wins":            would_win,
+            "losses":          would_lose,
+            "win_rate":        win_rate,
+            "total_pnl_per_dollar": round(total_pnl, 2),
+            "total_pnl_per_10":     round(total_pnl * 10, 2),
+            "results":         results[:30],
+        }
+
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
+
+
 @app.get("/signals-dashboard", response_class=HTMLResponse)
 def signals_dashboard():
     """Live signals dashboard — best bets ranked by forecast match."""
