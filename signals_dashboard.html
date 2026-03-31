@@ -358,7 +358,11 @@ function renderSignals() {
       <div class="action-row">
         <button class="buy-btn" onclick="window.open('${url}','_blank')">Buy YES →</button>
         <button class="save-btn ${isSaved?'saved':''}" id="save-${s.market_id}" 
-          onclick="saveSignal(${JSON.stringify(s)})">
+          data-mid="${s.market_id}" data-city="${s.city}" 
+          data-q="${(s.question||'').replace(/"/g,'').replace(/'/g,'')}"
+          data-price="${s.entry_price}" data-forecast="${s.forecast||0}" 
+          data-days="${s.days_out}"
+          onclick="saveSignalFromBtn(this)">
           ${isSaved ? '✓ Saved' : '+ Track'}
         </button>
       </div>
@@ -374,6 +378,18 @@ function renderSummary() {
   document.getElementById('statPrice').textContent = `${(avg*100).toFixed(1)}¢`;
   document.getElementById('statCities').textContent = new Set(allSignals.map(s=>s.city)).size;
   document.getElementById('statSoon').textContent = allSignals.filter(s=>s.days_out<=2).length;
+}
+
+async function saveSignalFromBtn(btn) {
+  const s = {
+    market_id: btn.dataset.mid,
+    city:       btn.dataset.city,
+    question:   btn.dataset.q,
+    entry_price: parseFloat(btn.dataset.price),
+    forecast:   parseFloat(btn.dataset.forecast),
+    days_out:   parseInt(btn.dataset.days),
+  };
+  await saveSignal(s);
 }
 
 async function saveSignal(s) {
