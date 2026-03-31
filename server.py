@@ -626,6 +626,16 @@ def early_signals():
         return {"error": str(e), "trace": traceback.format_exc()}
 
 
+@app.get("/signals-dashboard", response_class=HTMLResponse)
+def signals_dashboard():
+    """Live signals dashboard — best bets ranked by forecast match."""
+    try:
+        with open("signals_dashboard.html") as f:
+            return f.read()
+    except Exception as e:
+        return f"<h1>Error: {e}</h1>"
+
+
 @app.get("/morning/early")
 def run_early_trades():
     """Place early entry paper trades manually."""
