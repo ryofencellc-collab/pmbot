@@ -337,6 +337,9 @@ function renderSignals() {
     const gap = getGap(s);
     const match = Math.max(0, Math.min(100, (1 - gap/10)*100)).toFixed(0);
     const matchColor = match > 70 ? '#44ff88' : match > 40 ? '#ffcc44' : '#ff6644';
+    const conf = s.confidence || match;
+    const confColor = conf > 70 ? 'green' : conf > 40 ? 'yellow' : 'blue';
+    const modelText = s.models ? `Models: ${s.models}` : `Forecast: ${s.forecast}°`;
     const isSaved = savedIds.has(s.market_id);
     const url = `https://polymarket.com/event/${s.market_id}`;
 
@@ -349,8 +352,9 @@ function renderSignals() {
       <div class="metrics">
         <div class="metric"><div class="m-label">Price</div><div class="m-value yellow">${pct}¢</div></div>
         <div class="metric"><div class="m-label">Win/$10</div><div class="m-value green">$${win}</div></div>
-        <div class="metric"><div class="m-label">Forecast</div><div class="m-value blue">${s.forecast}°</div></div>
+        <div class="metric"><div class="m-label">Confidence</div><div class="m-value ${confColor}">${conf}%</div></div>
       </div>
+      <div style="font-size:11px;color:#555;margin-bottom:8px">${modelText}</div>
       <div class="match-bar">
         <div class="match-label"><span>Forecast Match</span><span style="color:${matchColor}">${match}%</span></div>
         <div class="bar-track"><div class="bar-fill" style="width:${match}%"></div></div>
