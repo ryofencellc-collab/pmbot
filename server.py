@@ -626,6 +626,127 @@ def early_signals():
         return {"error": str(e), "trace": traceback.format_exc()}
 
 
+# ── Signal Tracking ───────────────────────────────────────────────────────
+
+@app.post("/signals/save")
+def save_signal(market_id: str, city: str, question: str, 
+                entry_price: float, forecast: float, days_out: int):
+    """Save a signal to track whether it hits or not."""
+    try:
+        conn = get_conn()
+        c    = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS tracked_signals (
+                id SERIAL PRIMARY KEY,
+                saved_at TEXT,
+                market_id TEXT,
+                city TEXT,
+                question TEXT,
+                entry_price REAL,
+                forecast REAL,
+                days_out INT,
+                outcome TEXT,
+                pnl REAL,
+                resolved_at TEXT
+            )
+        """)
+        c.execute("""
+            INSERT INTO tracked_signals 
+            (saved_at, market_id, city, question, entry_price, forecast, days_out)
+            VALUES (%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT DO NOTHING
+        """, (
+            __import__('datetime').date.today().isoformat(),
+            market_id, city, question, entry_price, forecast, days_out
+        ))
+        conn.commit()
+        conn.close()
+        return {"status": "saved", "market_id": market_id}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/signals/tracked")
+def get_tracked_signals():
+    """Get all tracked signals with outcomes."""
+    try:
+        conn = get_conn()
+        c    = conn.cursor()
+        
+        # Create table if not exists
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS tracked_signals (
+                id SERIAL PRIMARY KEY,
+                saved_at TEXT,
+                market_id TEXT,
+                city TEXT,
+                question TEXT,
+                entry_price REAL,
+                forecast REAL,
+                days_out INT,
+                outcome TEXT,
+                pnl REAL,
+                resolved_at TEXT
+            )
+        """)
+
+        # Auto-resolve any pending signals
+        c.execute("""
+            SELECT id, market_id, entry_price FROM tracked_signals 
+            WHERE outcome IS NULL
+        """)
+        pending = c.fetchall()
+        
+        import requests as req
+        for row in pending:
+            try:
+                r = req.get(f"https://gamma-api.polymarket.com/markets/{row['market_id']}", timeout=10)
+                if r.status_code == 200:
+                    data   = r.json()
+                    closed = data.get("closed", False)
+                    prices = data.get("outcomePrices", "[]")
+                    if isinstance(prices, str):
+                        import json as j
+                        prices = j.loads(prices)
+                    if closed and prices:
+                        outcome = "Yes" if str(prices[0]) == "1" else "No"
+                        pnl     = round((1.0 / row["entry_price"]) * 1.0 - 1.0, 2) if outcome == "Yes" else -1.0
+                        c.execute("""
+                            UPDATE tracked_signals 
+                            SET outcome=%s, pnl=%s, resolved_at=%s 
+                            WHERE id=%s
+                        """, (outcome, pnl, __import__('datetime').date.today().isoformat(), row["id"]))
+            except Exception:
+                pass
+        
+        conn.commit()
+
+        # Get all signals
+        c.execute("""
+            SELECT * FROM tracked_signals 
+            ORDER BY saved_at DESC, id DESC
+        """)
+        signals = [dict(r) for r in c.fetchall()]
+
+        # Stats
+        resolved = [s for s in signals if s["outcome"]]
+        wins     = [s for s in resolved if s["outcome"] == "Yes"]
+        total_pnl = sum(s["pnl"] or 0 for s in resolved)
+
+        conn.close()
+        return {
+            "signals":    signals,
+            "total":      len(signals),
+            "resolved":   len(resolved),
+            "wins":       len(wins),
+            "win_rate":   round(len(wins)/len(resolved)*100, 1) if resolved else 0,
+            "total_pnl":  round(total_pnl, 2),
+            "pending":    len(signals) - len(resolved),
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 @app.get("/signals-dashboard", response_class=HTMLResponse)
 def signals_dashboard():
     """Live signals dashboard — best bets ranked by forecast match."""
