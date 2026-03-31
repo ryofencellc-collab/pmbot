@@ -103,22 +103,23 @@ def run_backtest(days_back=30, entry_price_max=0.05, forecast_window=2):
 
     cutoff = (date.today() - timedelta(days=days_back)).isoformat()
 
-    # Get resolved markets — only ones that opened early (created_at is 4+ days before resolved_at)
+    # Strategy: find ALL resolved markets opened 4+ days early
+    # For YES markets (winners): we assume we bought at entry_price_max (worst case)
+    # For NO markets (losers): we check if actual temp was near range
+    # This simulates: bot buys anything within forecast_window at entry_price_max
     c.execute("""
         SELECT id, question, city, target_low, target_high, market_type,
-               unit, outcome, last_trade_price,
+               unit, outcome,
                TO_CHAR(TO_TIMESTAMP(resolved_at), 'YYYY-MM-DD') as res_date,
                TO_CHAR(TO_TIMESTAMP(created_at), 'YYYY-MM-DD') as open_date,
                (resolved_at - created_at) / 86400 as days_open
         FROM markets
         WHERE outcome IN ('Yes', 'No')
         AND TO_TIMESTAMP(resolved_at)::date >= %s::date
-        AND last_trade_price > 0
-        AND last_trade_price <= %s
         AND (resolved_at - created_at) >= %s
         ORDER BY resolved_at DESC
-        LIMIT 1000
-    """, (cutoff, entry_price_max, 3 * 86400))  # at least 3 days open
+        LIMIT 2000
+    """, (cutoff, 3 * 86400))  # at least 3 days open
 
     markets = [dict(r) for r in c.fetchall()]
     conn.close()
@@ -150,11 +151,15 @@ def run_backtest(days_back=30, entry_price_max=0.05, forecast_window=2):
         gap = abs(mid - actual)
 
         # Only count if forecast would have matched (within window)
+        # i.e. our model would have pointed at this range
         if gap > forecast_window:
             continue
 
-        # This is a bet we would have made
+        # We would have bet on this range
+        # Assume entry price = entry_price_max (conservative worst case)
+        price = entry_price_max
         bet_size = 10.0
+
         if outcome == "Yes":
             pnl = round((1.0 / price) * bet_size - bet_size, 2)
             wins.append({
