@@ -628,7 +628,7 @@ def early_signals():
 
 # ── Signal Tracking ───────────────────────────────────────────────────────
 
-@app.post("/signals/save")
+@app.api_route("/signals/save", methods=["GET", "POST"])
 def save_signal(market_id: str, city: str, question: str, 
                 entry_price: float, forecast: float, days_out: int):
     """Save a signal to track whether it hits or not."""
@@ -654,7 +654,6 @@ def save_signal(market_id: str, city: str, question: str,
             INSERT INTO tracked_signals 
             (saved_at, market_id, city, question, entry_price, forecast, days_out)
             VALUES (%s,%s,%s,%s,%s,%s,%s)
-            ON CONFLICT DO NOTHING
         """, (
             __import__('datetime').date.today().isoformat(),
             market_id, city, question, entry_price, forecast, days_out
