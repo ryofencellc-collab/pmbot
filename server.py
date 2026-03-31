@@ -755,6 +755,80 @@ def get_tracked_signals():
 
 # ── Accuracy Backtest ─────────────────────────────────────────────────────
 
+@app.get("/backtest/early-entry")
+def backtest_early_entry(days: int = 30, window: float = 2.0, max_price: float = 0.05):
+    """
+    Backtest our actual early entry strategy.
+    Finds markets that were cheap (under max_price) AND 
+    where actual temp was within window degrees of the range.
+    Shows if we would have won.
+    """
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(__file__))
+        from backtest_early_entry import run_backtest
+        result = run_backtest(
+            days_back=days,
+            entry_price_max=max_price,
+            forecast_window=window
+        )
+        return result
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
+
+
+@app.get("/backtest/honda")
+def backtest_honda(days: int = 30):
+    """
+    Backtest HondaCivic strategy:
+    - FORECAST bets: $10 on range where forecast lands (10-60¢)
+    - LOTTERY bets: $2 on extreme cheap ranges under 5¢
+    """
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(__file__))
+        from backtest_honda_v2 import run_backtest
+        result = run_backtest(days_back=days)
+
+        forecast = result["forecast_bets"]
+        lottery  = result["lottery_bets"]
+        all_bets = forecast + lottery
+
+        f_wins = [b for b in forecast if b["outcome"] == "Yes"]
+        l_wins = [b for b in lottery  if b["outcome"] == "Yes"]
+
+        return {
+            "days":           days,
+            "forecast": {
+                "bets":     len(forecast),
+                "wins":     len(f_wins),
+                "win_rate": round(len(f_wins)/len(forecast)*100, 1) if forecast else 0,
+                "total_pnl": round(sum(b["pnl"] for b in forecast), 2),
+                "spent":    round(sum(b["bet_size"] for b in forecast), 2),
+                "daily":    round(sum(b["pnl"] for b in forecast)/days, 2),
+                "results":  sorted(forecast, key=lambda x: -x["pnl"])[:20],
+            },
+            "lottery": {
+                "bets":     len(lottery),
+                "wins":     len(l_wins),
+                "win_rate": round(len(l_wins)/len(lottery)*100, 1) if lottery else 0,
+                "total_pnl": round(sum(b["pnl"] for b in lottery), 2),
+                "spent":    round(sum(b["bet_size"] for b in lottery), 2),
+                "daily":    round(sum(b["pnl"] for b in lottery)/days, 2),
+                "results":  sorted(l_wins, key=lambda x: -x["pnl"])[:10],
+            },
+            "combined": {
+                "total_pnl": result["total_pnl"],
+                "total_spent": result["total_spent"],
+                "daily_avg": result["daily_avg"],
+            }
+        }
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
+
+
 @app.get("/backtest/accuracy")
 def backtest_accuracy(days: int = 7):
     """
@@ -1158,6 +1232,29 @@ def test_honda():
     except Exception as e:
         import traceback
         return {"error": str(e), "trace": traceback.format_exc()}
+
+
+@app.get("/backtest/early-entry")
+def backtest_early_entry(days: int = 30, window: float = 2.0, max_price: float = 0.05):
+    """
+    Backtest our actual early entry strategy.
+    Finds markets that were cheap (under max_price) AND 
+    where actual temp was within window degrees of the range.
+    Shows if we would have won.
+    """
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(__file__))
+        from backtest_early_entry import run_backtest
+        result = run_backtest(
+            days_back=days,
+            entry_price_max=max_price,
+            forecast_window=window
+        )
+        return result
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
 
 
 @app.get("/backtest/honda")
