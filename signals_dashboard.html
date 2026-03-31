@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PolyEdge — Live Signals</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0a0a0f; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+
+  header {
+    background: #12121a;
+    border-bottom: 1px solid #222;
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  header h1 { font-size: 20px; font-weight: 700; color: #fff; }
+  header h1 span { color: #7c6aff; }
+
+  .meta { font-size: 12px; color: #666; }
+  .meta b { color: #aaa; }
+
+  .controls {
+    padding: 16px 24px;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+    border-bottom: 1px solid #1a1a2a;
+  }
+
+  button {
+    background: #7c6aff;
+    color: #fff;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  button:hover { background: #6a58e0; }
+  button:disabled { background: #333; color: #666; cursor: not-allowed; }
+  button.secondary { background: #1e1e2e; border: 1px solid #333; color: #aaa; }
+  button.secondary:hover { background: #2a2a3e; }
+
+  .filter-tabs {
+    display: flex;
+    gap: 8px;
+  }
+  .tab {
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 13px;
+    cursor: pointer;
+    border: 1px solid #333;
+    background: transparent;
+    color: #888;
+    transition: all 0.2s;
+  }
+  .tab.active { background: #7c6aff; border-color: #7c6aff; color: #fff; }
+
+  .status-bar {
+    padding: 10px 24px;
+    font-size: 12px;
+    color: #666;
+    background: #0d0d14;
+    border-bottom: 1px solid #1a1a2a;
+  }
+  .status-bar.loading { color: #7c6aff; }
+  .status-bar.error { color: #ff4444; }
+  .status-bar.ok { color: #44ff88; }
+
+  .summary {
+    display: flex;
+    gap: 16px;
+    padding: 16px 24px;
+    flex-wrap: wrap;
+  }
+  .stat {
+    background: #12121a;
+    border: 1px solid #1e1e2e;
+    border-radius: 10px;
+    padding: 12px 18px;
+    min-width: 120px;
+  }
+  .stat .label { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat .value { font-size: 22px; font-weight: 700; color: #fff; margin-top: 4px; }
+  .stat .value.green { color: #44ff88; }
+  .stat .value.purple { color: #7c6aff; }
+  .stat .value.yellow { color: #ffcc44; }
+
+  .section-title {
+    padding: 16px 24px 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  .signals-grid {
+    padding: 0 24px 24px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 12px;
+  }
+
+  .signal-card {
+    background: #12121a;
+    border: 1px solid #1e1e2e;
+    border-radius: 12px;
+    padding: 16px;
+    transition: border-color 0.2s;
+    cursor: default;
+  }
+  .signal-card:hover { border-color: #7c6aff; }
+  .signal-card.top { border-color: #44ff88; }
+  .signal-card.top .rank-badge { background: #44ff88; color: #000; }
+
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 10px;
+  }
+
+  .city-name {
+    font-size: 16px;
+    font-weight: 700;
+    color: #fff;
+  }
+  .days-badge {
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 12px;
+    background: #1e1e2e;
+    color: #888;
+  }
+  .days-badge.soon { background: #2a1a2a; color: #ff88cc; }
+
+  .question {
+    font-size: 13px;
+    color: #aaa;
+    margin-bottom: 12px;
+    line-height: 1.4;
+  }
+
+  .metrics {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .metric {
+    background: #0a0a0f;
+    border-radius: 8px;
+    padding: 8px;
+    text-align: center;
+  }
+  .metric .m-label { font-size: 10px; color: #555; text-transform: uppercase; }
+  .metric .m-value { font-size: 15px; font-weight: 700; margin-top: 2px; }
+  .metric .m-value.green { color: #44ff88; }
+  .metric .m-value.yellow { color: #ffcc44; }
+  .metric .m-value.blue { color: #44aaff; }
+
+  .forecast-bar {
+    margin-bottom: 12px;
+  }
+  .forecast-label {
+    font-size: 11px;
+    color: #666;
+    margin-bottom: 4px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .bar-track {
+    height: 6px;
+    background: #1e1e2e;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    background: linear-gradient(90deg, #7c6aff, #44ff88);
+    transition: width 0.5s;
+  }
+
+  .action-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .buy-btn {
+    flex: 1;
+    padding: 8px;
+    font-size: 13px;
+    border-radius: 8px;
+    background: #1a2a1a;
+    border: 1px solid #2a4a2a;
+    color: #44ff88;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.2s;
+  }
+  .buy-btn:hover { background: #2a4a2a; }
+  .rank-badge {
+    font-size: 11px;
+    font-weight: 700;
+    padding: 4px 10px;
+    border-radius: 12px;
+    background: #7c6aff;
+    color: #fff;
+  }
+
+  .empty-state {
+    padding: 60px 24px;
+    text-align: center;
+    color: #444;
+  }
+  .empty-state .icon { font-size: 48px; margin-bottom: 16px; }
+  .empty-state p { font-size: 16px; }
+
+  .auto-refresh {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: #666;
+  }
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #444;
+  }
+  .dot.live { background: #44ff88; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  @media (max-width: 600px) {
+    .signals-grid { grid-template-columns: 1fr; padding: 0 12px 24px; }
+    .summary { padding: 12px; gap: 10px; }
+    .controls { padding: 12px; }
+    header { padding: 12px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Poly<span>Edge</span> — Live Signals</h1>
+  <div class="auto-refresh">
+    <div class="dot" id="liveDot"></div>
+    <span id="lastUpdated">Not loaded</span>
+  </div>
+</header>
+
+<div class="controls">
+  <button id="refreshBtn" onclick="loadSignals()">🔄 Refresh Signals</button>
+  <div class="filter-tabs">
+    <div class="tab active" onclick="setFilter('all', this)">All</div>
+    <div class="tab" onclick="setFilter('2', this)">2 Days</div>
+    <div class="tab" onclick="setFilter('3', this)">3 Days</div>
+    <div class="tab" onclick="setFilter('4', this)">4+ Days</div>
+  </div>
+  <div class="auto-refresh" style="margin-left:auto">
+    <input type="checkbox" id="autoRefresh" onchange="toggleAutoRefresh()">
+    <label for="autoRefresh" style="color:#888;font-size:12px">Auto-refresh every 5 min</label>
+  </div>
+</div>
+
+<div class="status-bar" id="statusBar">Click Refresh to load signals</div>
+
+<div class="summary" id="summary" style="display:none">
+  <div class="stat">
+    <div class="label">Total Signals</div>
+    <div class="value purple" id="statTotal">0</div>
+  </div>
+  <div class="stat">
+    <div class="label">Best EV</div>
+    <div class="value green" id="statBestEV">—</div>
+  </div>
+  <div class="stat">
+    <div class="label">Avg Entry</div>
+    <div class="value yellow" id="statAvgPrice">—</div>
+  </div>
+  <div class="stat">
+    <div class="label">Cities</div>
+    <div class="value" id="statCities">0</div>
+  </div>
+  <div class="stat">
+    <div class="label">Resolving Soon</div>
+    <div class="value" id="stat2d" style="color:#ff88cc">0</div>
+  </div>
+</div>
+
+<div class="section-title" id="sectionTitle" style="display:none">🔥 Top Picks — Ranked by Forecast Match</div>
+<div class="signals-grid" id="signalsGrid">
+  <div class="empty-state" style="grid-column:1/-1">
+    <div class="icon">📡</div>
+    <p>Hit Refresh to see today's best bets</p>
+  </div>
+</div>
+
+<script>
+let allSignals = [];
+let currentFilter = 'all';
+let autoRefreshTimer = null;
+
+async function loadSignals() {
+  const btn = document.getElementById('refreshBtn');
+  const status = document.getElementById('statusBar');
+  const dot = document.getElementById('liveDot');
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Loading...';
+  status.className = 'status-bar loading';
+  status.textContent = 'Fetching live signals from Polymarket...';
+  dot.className = 'dot';
+
+  try {
+    const res = await fetch('/early-signals');
+    const data = await res.json();
+
+    allSignals = (data.signals || []).sort((a, b) => {
+      // Score: closer forecast = better
+      const scoreA = getScore(a);
+      const scoreB = getScore(b);
+      return scoreB - scoreA;
+    });
+
+    const now = new Date().toLocaleTimeString();
+    document.getElementById('lastUpdated').textContent = `Updated ${now}`;
+    dot.className = 'dot live';
+    status.className = 'status-bar ok';
+    status.textContent = `✅ ${allSignals.length} signals loaded — ${now}`;
+
+    renderSignals();
+    renderSummary();
+    document.getElementById('summary').style.display = 'flex';
+    document.getElementById('sectionTitle').style.display = 'block';
+
+  } catch(e) {
+    status.className = 'status-bar error';
+    status.textContent = '❌ Failed to load signals — check app health';
+    dot.className = 'dot';
+  }
+
+  btn.disabled = false;
+  btn.textContent = '🔄 Refresh Signals';
+}
+
+function getScore(signal) {
+  // Score based on proximity of forecast to target range
+  const forecast = signal.forecast || 0;
+  const question = (signal.question || '').toLowerCase();
+  
+  // Extract target temp from question
+  const nums = question.match(/-?\d+\.?\d*/g) || [];
+  const temps = nums.map(Number).filter(n => n > -50 && n < 150);
+  
+  if (!temps.length) return signal.ev || 0;
+  
+  const target = temps.reduce((a, b) => a + b, 0) / temps.length;
+  const gap = Math.abs(target - forecast);
+  
+  // Lower gap = higher score. Also reward low price (high EV)
+  const proximityScore = Math.max(0, 10 - gap);
+  const daysScore = Math.max(0, 5 - signal.days_out);
+  const priceScore = signal.entry_price < 0.02 ? 3 : signal.entry_price < 0.035 ? 2 : 1;
+  
+  return proximityScore * 10 + daysScore * 5 + priceScore;
+}
+
+function setFilter(val, el) {
+  currentFilter = val;
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  renderSignals();
+}
+
+function renderSignals() {
+  const grid = document.getElementById('signalsGrid');
+  
+  let filtered = allSignals;
+  if (currentFilter === '2') filtered = allSignals.filter(s => s.days_out <= 2);
+  else if (currentFilter === '3') filtered = allSignals.filter(s => s.days_out === 3);
+  else if (currentFilter === '4') filtered = allSignals.filter(s => s.days_out >= 4);
+
+  if (!filtered.length) {
+    grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1"><div class="icon">🔍</div><p>No signals for this filter</p></div>';
+    return;
+  }
+
+  grid.innerHTML = filtered.map((s, i) => {
+    const isTop = i < 3;
+    const soon = s.days_out <= 2;
+    const winAmount = (10 / s.entry_price).toFixed(0);
+    const pricePct = (s.entry_price * 100).toFixed(1);
+    const forecastGap = getForecastGap(s);
+    const proximityPct = Math.max(0, Math.min(100, (1 - forecastGap / 10) * 100)).toFixed(0);
+    
+    const url = `https://polymarket.com/event/${s.market_id}`;
+    
+    return `
+    <div class="signal-card ${isTop ? 'top' : ''}">
+      <div class="card-header">
+        <div class="city-name">${s.city}</div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <div class="days-badge ${soon ? 'soon' : ''}">${s.days_out}d out</div>
+          ${isTop ? `<div class="rank-badge">#${i+1}</div>` : ''}
+        </div>
+      </div>
+      <div class="question">${s.question}</div>
+      <div class="metrics">
+        <div class="metric">
+          <div class="m-label">Price</div>
+          <div class="m-value yellow">${pricePct}¢</div>
+        </div>
+        <div class="metric">
+          <div class="m-label">Win on $10</div>
+          <div class="m-value green">$${winAmount}</div>
+        </div>
+        <div class="metric">
+          <div class="m-label">Forecast</div>
+          <div class="m-value blue">${s.forecast}°</div>
+        </div>
+      </div>
+      <div class="forecast-bar">
+        <div class="forecast-label">
+          <span>Forecast Match</span>
+          <span style="color:${proximityPct > 70 ? '#44ff88' : proximityPct > 40 ? '#ffcc44' : '#ff6644'}">${proximityPct}%</span>
+        </div>
+        <div class="bar-track">
+          <div class="bar-fill" style="width:${proximityPct}%"></div>
+        </div>
+      </div>
+      <div class="action-row">
+        <button class="buy-btn" onclick="window.open('${url}','_blank')">Buy YES on Polymarket →</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function getForecastGap(signal) {
+  const forecast = signal.forecast || 0;
+  const question = (signal.question || '').toLowerCase();
+  const nums = question.match(/-?\d+\.?\d*/g) || [];
+  const temps = nums.map(Number).filter(n => n > -50 && n < 150);
+  if (!temps.length) return 5;
+  const target = temps.reduce((a, b) => a + b, 0) / temps.length;
+  return Math.abs(target - forecast);
+}
+
+function renderSummary() {
+  document.getElementById('statTotal').textContent = allSignals.length;
+  
+  const bestEV = Math.max(...allSignals.map(s => s.ev || 0));
+  document.getElementById('statBestEV').textContent = bestEV > 0 ? `$${bestEV.toFixed(0)}` : '—';
+  
+  const avgPrice = allSignals.reduce((a, s) => a + s.entry_price, 0) / allSignals.length;
+  document.getElementById('statAvgPrice').textContent = `${(avgPrice * 100).toFixed(1)}¢`;
+  
+  const cities = new Set(allSignals.map(s => s.city)).size;
+  document.getElementById('statCities').textContent = cities;
+  
+  const soon = allSignals.filter(s => s.days_out <= 2).length;
+  document.getElementById('stat2d').textContent = soon;
+}
+
+function toggleAutoRefresh() {
+  if (document.getElementById('autoRefresh').checked) {
+    autoRefreshTimer = setInterval(loadSignals, 5 * 60 * 1000);
+  } else {
+    clearInterval(autoRefreshTimer);
+  }
+}
+
+// Load on start
+loadSignals();
+</script>
+</body>
+</html>
