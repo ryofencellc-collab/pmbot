@@ -539,6 +539,84 @@ def run_backtest():
         return {"error": str(e)}
 
 
+@app.get("/market-times")
+def market_times():
+    """
+    Checks real market open times from our DB for multiple cities.
+    Converts to EST. Checks multiple days to confirm the pattern.
+    This tells us EXACTLY when to place bets.
+    """
+    try:
+        from datetime import datetime, timezone, timedelta
+        EST = timezone(timedelta(hours=-5))
+
+        conn = get_conn()
+        c    = conn.cursor()
+
+        # Get last 14 days of markets for London and NYC
+        # Check created_at to find open time pattern
+        c.execute("""
+            SELECT city, question,
+                   TO_CHAR(TO_TIMESTAMP(created_at), 'YYYY-MM-DD HH24:MI:SS') as open_utc,
+                   TO_CHAR(TO_TIMESTAMP(resolved_at), 'YYYY-MM-DD') as res_date,
+                   created_at,
+                   (resolved_at - created_at) / 86400 as days_open
+            FROM markets
+            WHERE city IN ('London', 'NYC', 'New York City', 'Paris', 'Tokyo', 'Seoul')
+            AND created_at > 0
+            AND outcome IS NOT NULL
+            ORDER BY created_at DESC
+            LIMIT 60
+        """)
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+
+        # Convert to EST and find pattern
+        results = {}
+        for r in rows:
+            city = r["city"]
+            if city not in results:
+                results[city] = []
+
+            ts     = r["created_at"]
+            dt_utc = datetime.fromtimestamp(ts, tz=timezone.utc)
+            dt_est = dt_utc.astimezone(EST)
+
+            results[city].append({
+                "question":    r["question"][:50],
+                "open_utc":    dt_utc.strftime("%Y-%m-%d %H:%M UTC"),
+                "open_est":    dt_est.strftime("%Y-%m-%d %I:%M %p EST"),
+                "open_hour_utc": dt_utc.hour,
+                "open_hour_est": dt_est.hour,
+                "res_date":    r["res_date"],
+                "days_open":   round(float(r["days_open"]), 1),
+            })
+
+        # Find the consistent open time per city
+        summary = {}
+        for city, markets in results.items():
+            hours_utc = [m["open_hour_utc"] for m in markets]
+            hours_est = [m["open_hour_est"] for m in markets]
+            from collections import Counter
+            most_common_utc = Counter(hours_utc).most_common(1)[0][0] if hours_utc else None
+            most_common_est = Counter(hours_est).most_common(1)[0][0] if hours_est else None
+
+            summary[city] = {
+                "most_common_open_hour_utc": most_common_utc,
+                "most_common_open_hour_est": most_common_est,
+                "open_est_formatted": f"{most_common_est}:00 {'AM' if most_common_est < 12 else 'PM'} EST" if most_common_est is not None else "unknown",
+                "sample_markets": markets[:5],
+            }
+
+        return {
+            "summary": summary,
+            "note": "Based on real created_at timestamps from our DB"
+        }
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
+
+
 @app.get("/backtest/real")
 def run_backtest_real():
     """Real backtest Chicago using GFS MOS forecasts. Slow but 100% real."""
@@ -754,6 +832,106 @@ def get_tracked_signals():
 
 
 # ── Accuracy Backtest ─────────────────────────────────────────────────────
+
+@app.get("/market-times")
+def market_times():
+    """
+    Checks real market open times from our DB for multiple cities.
+    Converts to EST. Checks multiple days to confirm the pattern.
+    This tells us EXACTLY when to place bets.
+    """
+    try:
+        from datetime import datetime, timezone, timedelta
+        EST = timezone(timedelta(hours=-5))
+
+        conn = get_conn()
+        c    = conn.cursor()
+
+        # Get last 14 days of markets for London and NYC
+        # Check created_at to find open time pattern
+        c.execute("""
+            SELECT city, question,
+                   TO_CHAR(TO_TIMESTAMP(created_at), 'YYYY-MM-DD HH24:MI:SS') as open_utc,
+                   TO_CHAR(TO_TIMESTAMP(resolved_at), 'YYYY-MM-DD') as res_date,
+                   created_at,
+                   (resolved_at - created_at) / 86400 as days_open
+            FROM markets
+            WHERE city IN ('London', 'NYC', 'New York City', 'Paris', 'Tokyo', 'Seoul')
+            AND created_at > 0
+            AND outcome IS NOT NULL
+            ORDER BY created_at DESC
+            LIMIT 60
+        """)
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+
+        # Convert to EST and find pattern
+        results = {}
+        for r in rows:
+            city = r["city"]
+            if city not in results:
+                results[city] = []
+
+            ts     = r["created_at"]
+            dt_utc = datetime.fromtimestamp(ts, tz=timezone.utc)
+            dt_est = dt_utc.astimezone(EST)
+
+            results[city].append({
+                "question":    r["question"][:50],
+                "open_utc":    dt_utc.strftime("%Y-%m-%d %H:%M UTC"),
+                "open_est":    dt_est.strftime("%Y-%m-%d %I:%M %p EST"),
+                "open_hour_utc": dt_utc.hour,
+                "open_hour_est": dt_est.hour,
+                "res_date":    r["res_date"],
+                "days_open":   round(float(r["days_open"]), 1),
+            })
+
+        # Find the consistent open time per city
+        summary = {}
+        for city, markets in results.items():
+            hours_utc = [m["open_hour_utc"] for m in markets]
+            hours_est = [m["open_hour_est"] for m in markets]
+            from collections import Counter
+            most_common_utc = Counter(hours_utc).most_common(1)[0][0] if hours_utc else None
+            most_common_est = Counter(hours_est).most_common(1)[0][0] if hours_est else None
+
+            summary[city] = {
+                "most_common_open_hour_utc": most_common_utc,
+                "most_common_open_hour_est": most_common_est,
+                "open_est_formatted": f"{most_common_est}:00 {'AM' if most_common_est < 12 else 'PM'} EST" if most_common_est is not None else "unknown",
+                "sample_markets": markets[:5],
+            }
+
+        return {
+            "summary": summary,
+            "note": "Based on real created_at timestamps from our DB"
+        }
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
+
+
+@app.get("/backtest/real")
+def backtest_real(days: int = 30, max_price: float = 0.05, min_days: int = 3):
+    """
+    100% REAL DATA backtest.
+    - Uses actual Polymarket price history (opening price + time in EST)
+    - Uses actual Weather Underground temps (same source Polymarket uses)
+    - No simulations. No estimates.
+    """
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(__file__))
+        from price_history_backtest import run_backtest
+        return run_backtest(
+            days_back=days,
+            max_open_price=max_price,
+            min_days_before=min_days,
+        )
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
+
 
 @app.get("/backtest/early-entry")
 def backtest_early_entry(days: int = 30, window: float = 2.0, max_price: float = 0.05):
@@ -1234,6 +1412,106 @@ def test_honda():
         return {"error": str(e), "trace": traceback.format_exc()}
 
 
+@app.get("/market-times")
+def market_times():
+    """
+    Checks real market open times from our DB for multiple cities.
+    Converts to EST. Checks multiple days to confirm the pattern.
+    This tells us EXACTLY when to place bets.
+    """
+    try:
+        from datetime import datetime, timezone, timedelta
+        EST = timezone(timedelta(hours=-5))
+
+        conn = get_conn()
+        c    = conn.cursor()
+
+        # Get last 14 days of markets for London and NYC
+        # Check created_at to find open time pattern
+        c.execute("""
+            SELECT city, question,
+                   TO_CHAR(TO_TIMESTAMP(created_at), 'YYYY-MM-DD HH24:MI:SS') as open_utc,
+                   TO_CHAR(TO_TIMESTAMP(resolved_at), 'YYYY-MM-DD') as res_date,
+                   created_at,
+                   (resolved_at - created_at) / 86400 as days_open
+            FROM markets
+            WHERE city IN ('London', 'NYC', 'New York City', 'Paris', 'Tokyo', 'Seoul')
+            AND created_at > 0
+            AND outcome IS NOT NULL
+            ORDER BY created_at DESC
+            LIMIT 60
+        """)
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+
+        # Convert to EST and find pattern
+        results = {}
+        for r in rows:
+            city = r["city"]
+            if city not in results:
+                results[city] = []
+
+            ts     = r["created_at"]
+            dt_utc = datetime.fromtimestamp(ts, tz=timezone.utc)
+            dt_est = dt_utc.astimezone(EST)
+
+            results[city].append({
+                "question":    r["question"][:50],
+                "open_utc":    dt_utc.strftime("%Y-%m-%d %H:%M UTC"),
+                "open_est":    dt_est.strftime("%Y-%m-%d %I:%M %p EST"),
+                "open_hour_utc": dt_utc.hour,
+                "open_hour_est": dt_est.hour,
+                "res_date":    r["res_date"],
+                "days_open":   round(float(r["days_open"]), 1),
+            })
+
+        # Find the consistent open time per city
+        summary = {}
+        for city, markets in results.items():
+            hours_utc = [m["open_hour_utc"] for m in markets]
+            hours_est = [m["open_hour_est"] for m in markets]
+            from collections import Counter
+            most_common_utc = Counter(hours_utc).most_common(1)[0][0] if hours_utc else None
+            most_common_est = Counter(hours_est).most_common(1)[0][0] if hours_est else None
+
+            summary[city] = {
+                "most_common_open_hour_utc": most_common_utc,
+                "most_common_open_hour_est": most_common_est,
+                "open_est_formatted": f"{most_common_est}:00 {'AM' if most_common_est < 12 else 'PM'} EST" if most_common_est is not None else "unknown",
+                "sample_markets": markets[:5],
+            }
+
+        return {
+            "summary": summary,
+            "note": "Based on real created_at timestamps from our DB"
+        }
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
+
+
+@app.get("/backtest/real")
+def backtest_real(days: int = 30, max_price: float = 0.05, min_days: int = 3):
+    """
+    100% REAL DATA backtest.
+    - Uses actual Polymarket price history (opening price + time in EST)
+    - Uses actual Weather Underground temps (same source Polymarket uses)
+    - No simulations. No estimates.
+    """
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(__file__))
+        from price_history_backtest import run_backtest
+        return run_backtest(
+            days_back=days,
+            max_open_price=max_price,
+            min_days_before=min_days,
+        )
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
+
+
 @app.get("/backtest/early-entry")
 def backtest_early_entry(days: int = 30, window: float = 2.0, max_price: float = 0.05):
     """
@@ -1490,3 +1768,75 @@ def dashboard():
 
 if __name__ == "__main__":
     uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=False)
+
+
+@app.get("/research/market-open-times")
+def market_open_times():
+    """
+    Check real market open times from our DB.
+    Shows created_at in EST for multiple cities/dates
+    to find the exact pattern of when markets open.
+    """
+    from datetime import timezone, timedelta
+    EST = timezone(timedelta(hours=-5))
+
+    try:
+        conn = get_conn()
+        c    = conn.cursor()
+
+        # Get last 30 days of markets with created_at
+        # for our key cities — multiple dates to find pattern
+        c.execute("""
+            SELECT city, question,
+                   TO_CHAR(TO_TIMESTAMP(created_at) AT TIME ZONE 'America/New_York', 
+                           'YYYY-MM-DD HH12:MI AM') as open_est,
+                   TO_CHAR(TO_TIMESTAMP(resolved_at) AT TIME ZONE 'America/New_York',
+                           'YYYY-MM-DD HH12:MI AM') as resolve_est,
+                   ROUND((resolved_at - created_at) / 86400.0, 1) as days_open,
+                   outcome,
+                   last_trade_price
+            FROM markets
+            WHERE city IN ('London', 'NYC', 'Paris', 'Tokyo', 'Seoul',
+                          'Dallas', 'Miami', 'Toronto', 'Madrid', 'Munich')
+            AND created_at IS NOT NULL
+            AND resolved_at IS NOT NULL
+            AND outcome IN ('Yes', 'No')
+            ORDER BY created_at DESC
+            LIMIT 100
+        """)
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+
+        # Group by city to find pattern
+        by_city = {}
+        for r in rows:
+            city = r["city"]
+            if city not in by_city:
+                by_city[city] = []
+            by_city[city].append(r)
+
+        # Extract just the TIME part to find pattern
+        summary = {}
+        for city, markets in by_city.items():
+            open_times = []
+            for m in markets[:10]:
+                if m["open_est"]:
+                    # Extract just time portion
+                    parts = m["open_est"].split(" ")
+                    if len(parts) >= 3:
+                        time_only = f"{parts[1]} {parts[2]}"
+                        open_times.append({
+                            "date":    parts[0],
+                            "time":    time_only,
+                            "days_open": m["days_open"],
+                            "resolve_est": m["resolve_est"],
+                        })
+            summary[city] = open_times
+
+        return {
+            "summary": summary,
+            "raw":     rows[:50],
+        }
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
