@@ -3,168 +3,186 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PolyEdge — Live Signals</title>
+<title>PolyEdge — Signal Dashboard</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #0a0a0f; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0a0a0f; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
 
-  header {
-    background: #12121a; border-bottom: 1px solid #222;
-    padding: 16px 24px; display: flex; align-items: center; justify-content: space-between;
-  }
-  header h1 { font-size: 20px; font-weight: 700; color: #fff; }
-  header h1 span { color: #7c6aff; }
+header {
+  background: #12121a; border-bottom: 1px solid #222;
+  padding: 16px 24px; display: flex; align-items: center; justify-content: space-between;
+}
+header h1 { font-size: 20px; font-weight: 700; color: #fff; }
+header h1 span { color: #7c6aff; }
 
-  .nav-tabs {
-    display: flex; background: #12121a; border-bottom: 1px solid #1e1e2e;
-    padding: 0 24px;
-  }
-  .nav-tab {
-    padding: 12px 20px; font-size: 14px; font-weight: 600;
-    cursor: pointer; color: #666; border-bottom: 2px solid transparent;
-    transition: all 0.2s;
-  }
-  .nav-tab.active { color: #7c6aff; border-bottom-color: #7c6aff; }
+.nav-tabs {
+  display: flex; background: #12121a; border-bottom: 1px solid #1e1e2e;
+  padding: 0 24px; overflow-x: auto;
+}
+.nav-tab {
+  padding: 12px 20px; font-size: 14px; font-weight: 600;
+  cursor: pointer; color: #666; border-bottom: 2px solid transparent;
+  transition: all 0.2s; white-space: nowrap;
+}
+.nav-tab.active { color: #7c6aff; border-bottom-color: #7c6aff; }
 
-  .page { display: none; }
-  .page.active { display: block; }
+.page { display: none; }
+.page.active { display: block; }
 
-  .controls {
-    padding: 16px 24px; display: flex; gap: 12px;
-    align-items: center; flex-wrap: wrap; border-bottom: 1px solid #1a1a2a;
-  }
-  button {
-    background: #7c6aff; color: #fff; border: none;
-    padding: 10px 20px; border-radius: 8px; font-size: 14px;
-    font-weight: 600; cursor: pointer; transition: background 0.2s;
-  }
-  button:hover { background: #6a58e0; }
-  button:disabled { background: #333; color: #666; cursor: not-allowed; }
+.controls {
+  padding: 16px 24px; display: flex; gap: 12px;
+  align-items: center; flex-wrap: wrap; border-bottom: 1px solid #1a1a2a;
+}
+button {
+  background: #7c6aff; color: #fff; border: none;
+  padding: 10px 20px; border-radius: 8px; font-size: 14px;
+  font-weight: 600; cursor: pointer; transition: background 0.2s;
+}
+button:hover { background: #6a58e0; }
+button.secondary { background: #1e1e2e; border: 1px solid #333; color: #aaa; }
+button.secondary:hover { background: #2a2a3e; color: #fff; }
 
-  .filter-tabs { display: flex; gap: 8px; }
-  .tab {
-    padding: 6px 14px; border-radius: 20px; font-size: 13px;
-    cursor: pointer; border: 1px solid #333; background: transparent;
-    color: #888; transition: all 0.2s;
-  }
-  .tab.active { background: #7c6aff; border-color: #7c6aff; color: #fff; }
+.status-bar {
+  padding: 10px 24px; font-size: 12px; color: #666;
+  background: #0d0d14; border-bottom: 1px solid #1a1a2a;
+}
+.status-bar.loading { color: #7c6aff; }
+.status-bar.error   { color: #ff4444; }
+.status-bar.ok      { color: #44ff88; }
 
-  .status-bar {
-    padding: 10px 24px; font-size: 12px; color: #666;
-    background: #0d0d14; border-bottom: 1px solid #1a1a2a;
-  }
-  .status-bar.loading { color: #7c6aff; }
-  .status-bar.error { color: #ff4444; }
-  .status-bar.ok { color: #44ff88; }
+.summary { display: flex; gap: 12px; padding: 16px 24px; flex-wrap: wrap; }
+.stat {
+  background: #12121a; border: 1px solid #1e1e2e;
+  border-radius: 10px; padding: 12px 18px; min-width: 110px;
+}
+.stat .label { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
+.stat .value { font-size: 20px; font-weight: 700; color: #fff; margin-top: 4px; }
+.stat .value.green  { color: #44ff88; }
+.stat .value.purple { color: #7c6aff; }
+.stat .value.yellow { color: #ffcc44; }
+.stat .value.red    { color: #ff4444; }
+.stat .value.blue   { color: #44aaff; }
 
-  .summary { display: flex; gap: 12px; padding: 16px 24px; flex-wrap: wrap; }
-  .stat {
-    background: #12121a; border: 1px solid #1e1e2e;
-    border-radius: 10px; padding: 12px 18px; min-width: 110px;
-  }
-  .stat .label { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
-  .stat .value { font-size: 20px; font-weight: 700; color: #fff; margin-top: 4px; }
-  .stat .value.green { color: #44ff88; }
-  .stat .value.purple { color: #7c6aff; }
-  .stat .value.yellow { color: #ffcc44; }
-  .stat .value.red { color: #ff4444; }
-  .stat .value.pink { color: #ff88cc; }
+.section-title {
+  padding: 16px 24px 8px; font-size: 13px; font-weight: 600;
+  color: #666; text-transform: uppercase; letter-spacing: 1px;
+}
 
-  .section-title {
-    padding: 16px 24px 8px; font-size: 13px; font-weight: 600;
-    color: #666; text-transform: uppercase; letter-spacing: 1px;
-  }
+/* City accuracy cards */
+.city-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px; padding: 0 24px 24px;
+}
+.city-card {
+  background: #12121a; border: 1px solid #1e1e2e;
+  border-radius: 12px; padding: 16px; transition: border-color 0.2s;
+}
+.city-card.bet-big  { border-color: #44ff88; }
+.city-card.caution  { border-color: #ffcc44; }
+.city-card.avoid    { border-color: #333; opacity: 0.7; }
+.city-card-header   { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.city-name          { font-size: 18px; font-weight: 700; color: #fff; }
+.city-badge         { font-size: 12px; padding: 4px 10px; border-radius: 12px; font-weight: 700; }
+.city-badge.bet-big { background: #1a3a1a; color: #44ff88; }
+.city-badge.caution { background: #2a2a1a; color: #ffcc44; }
+.city-badge.avoid   { background: #1e1e2e; color: #666; }
 
-  .signals-grid {
-    padding: 0 24px 24px;
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px;
-  }
+.accuracy-bar { margin: 10px 0; }
+.acc-label    { display: flex; justify-content: space-between; font-size: 11px; color: #666; margin-bottom: 4px; }
+.bar-track    { height: 8px; background: #1e1e2e; border-radius: 4px; overflow: hidden; }
+.bar-fill     { height: 100%; border-radius: 4px; }
+.bar-fill.green  { background: linear-gradient(90deg, #44ff88, #00cc66); }
+.bar-fill.yellow { background: linear-gradient(90deg, #ffcc44, #ff9900); }
+.bar-fill.red    { background: #333; }
 
-  .signal-card {
-    background: #12121a; border: 1px solid #1e1e2e;
-    border-radius: 12px; padding: 16px; transition: border-color 0.2s;
-  }
-  .signal-card:hover { border-color: #7c6aff; }
-  .signal-card.top { border-color: #44ff88; }
+.city-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.c-metric     { background: #0a0a0f; border-radius: 8px; padding: 8px; text-align: center; }
+.c-metric .ml { font-size: 10px; color: #555; text-transform: uppercase; }
+.c-metric .mv { font-size: 14px; font-weight: 700; margin-top: 2px; }
 
-  .card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
-  .city-name { font-size: 16px; font-weight: 700; color: #fff; }
-  .days-badge {
-    font-size: 11px; padding: 3px 8px; border-radius: 12px;
-    background: #1e1e2e; color: #888;
-  }
-  .days-badge.soon { background: #2a1a2a; color: #ff88cc; }
-  .question { font-size: 13px; color: #aaa; margin-bottom: 12px; line-height: 1.4; }
+.open-time { margin-top: 10px; font-size: 12px; color: #888; padding: 6px 10px; background: #0a0a0f; border-radius: 6px; }
+.open-time span { color: #44aaff; font-weight: 700; }
 
-  .metrics { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 12px; }
-  .metric { background: #0a0a0f; border-radius: 8px; padding: 8px; text-align: center; }
-  .metric .m-label { font-size: 10px; color: #555; text-transform: uppercase; }
-  .metric .m-value { font-size: 15px; font-weight: 700; margin-top: 2px; }
-  .metric .m-value.green { color: #44ff88; }
-  .metric .m-value.yellow { color: #ffcc44; }
-  .metric .m-value.blue { color: #44aaff; }
+/* Signals grid */
+.signals-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px; padding: 0 24px 24px;
+}
+.signal-card {
+  background: #12121a; border: 1px solid #1e1e2e;
+  border-radius: 12px; padding: 16px; transition: border-color 0.2s;
+}
+.signal-card:hover { border-color: #7c6aff; }
+.signal-card.seattle { border-color: #44ff88; }
+.signal-card.dallas  { border-color: #ffcc44; }
 
-  .match-bar { margin-bottom: 12px; }
-  .match-label {
-    font-size: 11px; color: #666; margin-bottom: 4px;
-    display: flex; justify-content: space-between;
-  }
-  .bar-track { height: 6px; background: #1e1e2e; border-radius: 3px; overflow: hidden; }
-  .bar-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, #7c6aff, #44ff88); }
+.card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
+.s-city  { font-size: 16px; font-weight: 700; color: #fff; }
+.s-badge { font-size: 11px; padding: 3px 8px; border-radius: 12px; }
+.s-badge.big    { background: #1a3a1a; color: #44ff88; }
+.s-badge.small  { background: #2a2a1a; color: #ffcc44; }
+.s-badge.skip   { background: #1e1e2e; color: #666; }
 
-  .action-row { display: flex; gap: 8px; align-items: center; }
-  .buy-btn {
-    flex: 1; padding: 8px; font-size: 13px; border-radius: 8px;
-    background: #1a2a1a; border: 1px solid #2a4a2a; color: #44ff88;
-    cursor: pointer; font-weight: 600; transition: all 0.2s;
-  }
-  .buy-btn:hover { background: #2a4a2a; }
-  .save-btn {
-    padding: 8px 12px; font-size: 12px; border-radius: 8px;
-    background: #1a1a2a; border: 1px solid #333; color: #7c6aff;
-    cursor: pointer; font-weight: 600; transition: all 0.2s;
-    white-space: nowrap;
-  }
-  .save-btn:hover { background: #2a2a3e; }
-  .save-btn.saved { background: #2a2a1a; border-color: #ffcc44; color: #ffcc44; }
+.s-question { font-size: 13px; color: #aaa; margin-bottom: 12px; line-height: 1.4; }
+.s-metrics  { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+.s-metric   { background: #0a0a0f; border-radius: 8px; padding: 8px; text-align: center; }
+.s-metric .ml { font-size: 10px; color: #555; text-transform: uppercase; }
+.s-metric .mv { font-size: 15px; font-weight: 700; margin-top: 2px; }
 
-  /* Tracking table */
-  .track-table { margin: 0 24px 24px; overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th { text-align: left; padding: 10px 12px; color: #666; font-size: 11px; text-transform: uppercase; border-bottom: 1px solid #1e1e2e; }
-  td { padding: 10px 12px; border-bottom: 1px solid #1a1a2a; }
-  tr:hover td { background: #12121a; }
-  .pill {
-    display: inline-block; padding: 3px 10px; border-radius: 12px;
-    font-size: 11px; font-weight: 700;
-  }
-  .pill.yes { background: #1a3a1a; color: #44ff88; }
-  .pill.no { background: #3a1a1a; color: #ff4444; }
-  .pill.pending { background: #1a1a2a; color: #7c6aff; }
+.conf-bar   { margin-bottom: 12px; }
+.conf-label { display: flex; justify-content: space-between; font-size: 11px; color: #666; margin-bottom: 4px; }
 
-  .empty-state { padding: 60px 24px; text-align: center; color: #444; grid-column: 1/-1; }
-  .empty-state .icon { font-size: 48px; margin-bottom: 16px; }
+.action-row { display: flex; gap: 8px; }
+.buy-btn {
+  flex: 1; padding: 8px; font-size: 13px; border-radius: 8px;
+  background: #1a2a1a; border: 1px solid #2a4a2a; color: #44ff88;
+  cursor: pointer; font-weight: 600; transition: all 0.2s;
+}
+.buy-btn:hover { background: #2a4a2a; }
+.save-btn {
+  padding: 8px 12px; font-size: 12px; border-radius: 8px;
+  background: #1a1a2a; border: 1px solid #333; color: #7c6aff;
+  cursor: pointer; font-weight: 600; transition: all 0.2s;
+}
+.save-btn:hover  { background: #2a2a3e; }
+.save-btn.saved  { background: #2a2a1a; border-color: #ffcc44; color: #ffcc44; }
 
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: #444; display:inline-block; }
-  .dot.live { background: #44ff88; animation: pulse 2s infinite; }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+/* Tracking table */
+.track-table { margin: 0 24px 24px; overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; padding: 10px 12px; color: #666; font-size: 11px; text-transform: uppercase; border-bottom: 1px solid #1e1e2e; }
+td { padding: 10px 12px; border-bottom: 1px solid #1a1a2a; }
+tr:hover td { background: #12121a; }
+.pill { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; }
+.pill.yes     { background: #1a3a1a; color: #44ff88; }
+.pill.no      { background: #3a1a1a; color: #ff4444; }
+.pill.pending { background: #1a1a2a; color: #7c6aff; }
 
-  .auto-row { display:flex; align-items:center; gap:8px; font-size:12px; color:#666; margin-left:auto; }
+.empty-state { padding: 60px 24px; text-align: center; color: #444; grid-column: 1/-1; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: #444; display: inline-block; }
+.dot.live { background: #44ff88; animation: pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
-  @media (max-width: 600px) {
-    .signals-grid { grid-template-columns: 1fr; padding: 0 12px 24px; }
-    .summary { padding: 12px; }
-    .controls { padding: 12px; }
-    header { padding: 12px; }
-    .track-table { margin: 0 12px 24px; }
-    .nav-tabs { padding: 0 12px; }
-  }
+/* Journey detail */
+.journey-detail {
+  margin: 0 24px 24px; background: #12121a;
+  border: 1px solid #1e1e2e; border-radius: 12px; padding: 16px;
+}
+
+@media (max-width:600px) {
+  .signals-grid,.city-grid { grid-template-columns:1fr; padding:0 12px 24px; }
+  .summary { padding:12px; }
+  .controls,.section-title { padding:12px; }
+  header { padding:12px; }
+  .track-table { margin:0 12px 24px; }
+  .nav-tabs { padding:0 12px; }
+}
 </style>
 </head>
 <body>
 
 <header>
-  <h1>Poly<span>Edge</span> Signals</h1>
+  <h1>Poly<span>Edge</span></h1>
   <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#666">
     <div class="dot" id="liveDot"></div>
     <span id="lastUpdated">Not loaded</span>
@@ -172,88 +190,53 @@
 </header>
 
 <div class="nav-tabs">
-  <div class="nav-tab active" onclick="showPage('signals', this)">📡 Live Signals</div>
-  <div class="nav-tab" onclick="showPage('tracking', this)">📊 Signal Tracker</div>
-  <div class="nav-tab" onclick="showPage('backtest', this)">🔬 Accuracy Test</div>
+  <div class="nav-tab active" onclick="showPage('accuracy',this)">🎯 City Accuracy</div>
+  <div class="nav-tab" onclick="showPage('signals',this)">📡 Live Signals</div>
+  <div class="nav-tab" onclick="showPage('tracking',this)">📊 Signal Tracker</div>
+  <div class="nav-tab" onclick="showPage('backtest',this)">🔬 Backtest</div>
+</div>
+
+<!-- ACCURACY PAGE -->
+<div class="page active" id="page-accuracy">
+  <div class="controls">
+    <button onclick="loadAccuracy()">🔄 Refresh Accuracy</button>
+    <button class="secondary" onclick="loadAccuracy(14)">14 Days</button>
+    <button class="secondary" onclick="loadAccuracy(30)">30 Days</button>
+  </div>
+  <div class="status-bar" id="accStatus">Click Refresh to load city accuracy data</div>
+
+  <div class="summary" id="accSummary" style="display:none">
+    <div class="stat"><div class="label">Cities Tested</div><div class="value purple" id="accCities">0</div></div>
+    <div class="stat"><div class="label">Bet Big</div><div class="value green" id="accBig">0</div></div>
+    <div class="stat"><div class="label">Overall Accuracy</div><div class="value yellow" id="accOverall">—</div></div>
+    <div class="stat"><div class="label">Forecasts Tested</div><div class="value" id="accTotal">0</div></div>
+  </div>
+
+  <div class="section-title" id="accTitle" style="display:none">📊 City Rankings — Based on Real WU vs Model Data</div>
+  <div class="city-grid" id="cityGrid">
+    <div class="empty-state"><div style="font-size:48px">🎯</div><p>Click Refresh to see which cities to bet big on</p></div>
+  </div>
 </div>
 
 <!-- SIGNALS PAGE -->
-<div class="page active" id="page-signals">
+<div class="page" id="page-signals">
   <div class="controls">
-    <button id="refreshBtn" onclick="loadSignals()">🔄 Refresh</button>
-    <div class="filter-tabs">
-      <div class="tab active" onclick="setFilter('all',this)">All</div>
-      <div class="tab" onclick="setFilter('2',this)">2 Days</div>
-      <div class="tab" onclick="setFilter('3',this)">3 Days</div>
-      <div class="tab" onclick="setFilter('4',this)">4+ Days</div>
-    </div>
-    <div class="auto-row">
+    <button id="refreshBtn" onclick="loadSignals()">🔄 Refresh Signals</button>
+    <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#666;margin-left:auto">
       <input type="checkbox" id="autoRefresh" onchange="toggleAuto()">
       <label for="autoRefresh">Auto 5min</label>
     </div>
   </div>
-
   <div class="status-bar" id="statusBar">Click Refresh to load signals</div>
-
-  <div class="summary" id="summary" style="display:none">
+  <div class="summary" id="sigSummary" style="display:none">
     <div class="stat"><div class="label">Signals</div><div class="value purple" id="statTotal">0</div></div>
-    <div class="stat"><div class="label">Best Win</div><div class="value green" id="statBest">—</div></div>
-    <div class="stat"><div class="label">Avg Price</div><div class="value yellow" id="statPrice">—</div></div>
+    <div class="stat"><div class="label">Bet Big Cities</div><div class="value green" id="statBig">0</div></div>
+    <div class="stat"><div class="label">Avg Confidence</div><div class="value yellow" id="statConf">—</div></div>
     <div class="stat"><div class="label">Cities</div><div class="value" id="statCities">0</div></div>
-    <div class="stat"><div class="label">Resolves Soon</div><div class="value pink" id="statSoon">0</div></div>
   </div>
-
-  <div class="section-title" id="secTitle" style="display:none">🔥 Best Bets — Ranked by Forecast Match</div>
+  <div class="section-title" id="sigTitle" style="display:none">🔥 Signals — Green = Bet Big City</div>
   <div class="signals-grid" id="signalsGrid">
-    <div class="empty-state">
-      <div class="icon">📡</div>
-      <p>Hit Refresh to see today's best bets</p>
-    </div>
-  </div>
-</div>
-
-<!-- BACKTEST PAGE -->
-<div class="page" id="page-backtest">
-  <div class="controls">
-    <button onclick="runJourney(7)">Last 7 Days</button>
-    <button onclick="runJourney(14)" style="background:#1e1e2e;border:1px solid #333;color:#aaa">Last 14 Days</button>
-    <button onclick="runJourney(30)" style="background:#1e1e2e;border:1px solid #333;color:#aaa">Last 30 Days</button>
-  </div>
-  <div class="status-bar" id="btStatus">Click a button to run Honda strategy backtest</div>
-
-  <div style="padding:12px 24px;font-size:13px;color:#888;border-bottom:1px solid #1a1a2a">
-    Simulates: <span style="color:#44ff88">$10 forecast bets</span> (range where forecast lands, 10-60¢) 
-    + <span style="color:#ffcc44">$2 lottery bets</span> (extreme cheap ranges under 5¢)
-  </div>
-
-  <div class="summary" id="btSummary" style="display:none">
-    <div class="stat"><div class="label">Markets</div><div class="value purple" id="btTotal">0</div></div>
-    <div class="stat"><div class="label">Win Rate</div><div class="value yellow" id="btRate">—</div></div>
-    <div class="stat"><div class="label">Total P&L</div><div class="value green" id="btPnl">$0</div></div>
-    <div class="stat"><div class="label">Daily Avg</div><div class="value green" id="btDaily">$0</div></div>
-    <div class="stat"><div class="label">Avg Buy Window</div><div class="value blue" id="btWindow">—</div></div>
-  </div>
-
-  <div class="section-title" id="btTitle" style="display:none">📋 Price Journey Results — Click any row to see full price history</div>
-  <div class="track-table">
-    <table id="btTable" style="display:none">
-      <thead>
-        <tr>
-          <th>City</th><th>Date</th><th>Open Time EST</th>
-          <th>Open Price</th><th>Days Before</th>
-          <th>Buy Window</th><th>WU Temp</th>
-          <th>Won?</th><th>P&L</th>
-        </tr>
-      </thead>
-      <tbody id="btBody"></tbody>
-    </table>
-  </div>
-  <div id="journeyDetail" style="display:none;margin:0 24px 24px;background:#12121a;border:1px solid #1e1e2e;border-radius:12px;padding:16px">
-    <div style="font-size:13px;font-weight:700;color:#fff;margin-bottom:12px" id="journeyTitle"></div>
-    <div style="font-size:12px;color:#888;margin-bottom:8px">Full price journey (every significant price change):</div>
-    <div id="journeyTicks" style="font-family:monospace;font-size:12px;max-height:300px;overflow-y:auto"></div>
-    <div style="margin-top:12px;font-size:12px;color:#888">Bets placed:</div>
-    <div id="journeyBets" style="font-size:12px;margin-top:6px"></div>
+    <div class="empty-state"><div style="font-size:48px">📡</div><p>Hit Refresh to see today's signals</p></div>
   </div>
 </div>
 
@@ -262,42 +245,83 @@
   <div class="controls">
     <button onclick="loadTracked()">🔄 Refresh Tracker</button>
   </div>
-
   <div class="summary" id="trackSummary" style="display:none">
     <div class="stat"><div class="label">Tracked</div><div class="value purple" id="tTotal">0</div></div>
     <div class="stat"><div class="label">Wins</div><div class="value green" id="tWins">0</div></div>
     <div class="stat"><div class="label">Win Rate</div><div class="value yellow" id="tRate">—</div></div>
     <div class="stat"><div class="label">Total P&L</div><div class="value green" id="tPnl">$0</div></div>
-    <div class="stat"><div class="label">Pending</div><div class="value" id="tPending">0</div></div>
   </div>
-
   <div class="section-title">📋 All Tracked Signals</div>
   <div class="track-table">
-    <table id="trackTable">
-      <thead>
-        <tr>
-          <th>Date</th>
-          <th>City</th>
-          <th>Question</th>
-          <th>Price</th>
-          <th>Forecast</th>
-          <th>Days</th>
-          <th>Outcome</th>
-          <th>P&L</th>
-        </tr>
-      </thead>
-      <tbody id="trackBody">
-        <tr><td colspan="8" style="text-align:center;color:#444;padding:40px">No tracked signals yet — save signals from the Live tab</td></tr>
-      </tbody>
+    <table>
+      <thead><tr><th>Date</th><th>City</th><th>Question</th><th>Price</th><th>Forecast</th><th>Days</th><th>Outcome</th><th>P&L</th></tr></thead>
+      <tbody id="trackBody"><tr><td colspan="8" style="text-align:center;color:#444;padding:40px">No tracked signals yet</td></tr></tbody>
     </table>
   </div>
 </div>
 
+<!-- BACKTEST PAGE -->
+<div class="page" id="page-backtest">
+  <div class="controls">
+    <button onclick="runJourney(7)">Last 7 Days</button>
+    <button class="secondary" onclick="runJourney(14)">Last 14 Days</button>
+    <button class="secondary" onclick="runJourney(30)">Last 30 Days</button>
+  </div>
+  <div class="status-bar" id="btStatus">Click a button to run price journey backtest</div>
+  <div class="summary" id="btSummary" style="display:none">
+    <div class="stat"><div class="label">Markets</div><div class="value purple" id="btTotal">0</div></div>
+    <div class="stat"><div class="label">Win Rate</div><div class="value yellow" id="btRate">—</div></div>
+    <div class="stat"><div class="label">Total P&L</div><div class="value green" id="btPnl">$0</div></div>
+    <div class="stat"><div class="label">Daily Avg</div><div class="value green" id="btDaily">$0</div></div>
+    <div class="stat"><div class="label">Avg Buy Window</div><div class="value blue" id="btWindow">—</div></div>
+  </div>
+  <div class="section-title" id="btTitle" style="display:none">📋 Price Journey — Click row for full history</div>
+  <div class="track-table">
+    <table id="btTable" style="display:none">
+      <thead><tr><th>City</th><th>Date</th><th>Open EST</th><th>Open Price</th><th>Days Before</th><th>Buy Window</th><th>WU Temp</th><th>Won?</th><th>P&L</th></tr></thead>
+      <tbody id="btBody"></tbody>
+    </table>
+  </div>
+  <div id="journeyDetail" style="display:none" class="journey-detail">
+    <div style="font-size:13px;font-weight:700;color:#fff;margin-bottom:12px" id="journeyTitle"></div>
+    <div style="font-size:12px;color:#888;margin-bottom:8px">Price journey:</div>
+    <div id="journeyTicks" style="font-family:monospace;font-size:12px;max-height:300px;overflow-y:auto"></div>
+    <div style="margin-top:12px;font-size:12px;color:#888">Bets:</div>
+    <div id="journeyBets" style="font-size:12px;margin-top:6px"></div>
+  </div>
+</div>
+
 <script>
-let allSignals = [];
-let savedIds = new Set(JSON.parse(localStorage.getItem('savedIds') || '[]'));
-let currentFilter = 'all';
-let autoTimer = null;
+// City accuracy data — known from backtest
+const CITY_ACCURACY = {
+  "Seattle":     { accuracy: 75.9, avg_error: 1.3, action: "bet-big",  open_est: "6:00 AM EST",  label: "✅ BET BIG" },
+  "Dallas":      { accuracy: 65.5, avg_error: 2.4, action: "caution",  open_est: "6:00 AM EST",  label: "⚠️ CAUTION" },
+  "NYC":         { accuracy: 56.7, avg_error: 2.8, action: "caution",  open_est: "3:15 PM EST",  label: "⚠️ CAUTION" },
+  "Chicago":     { accuracy: 0,    avg_error: 0,   action: "testing",  open_est: "6:00 AM EST",  label: "🔄 TESTING" },
+  "Atlanta":     { accuracy: 44.8, avg_error: 2.4, action: "avoid",    open_est: "6:00 AM EST",  label: "❌ AVOID" },
+  "Miami":       { accuracy: 40.9, avg_error: 2.9, action: "avoid",    open_est: "6:00 AM EST",  label: "❌ AVOID" },
+  "London":      { accuracy: 0,    avg_error: 0,   action: "testing",  open_est: "1:53 PM EST",  label: "🔄 TESTING" },
+  "Paris":       { accuracy: 0,    avg_error: 0,   action: "testing",  open_est: "1:52 PM EST",  label: "🔄 TESTING" },
+  "Toronto":     { accuracy: 0,    avg_error: 0,   action: "testing",  open_est: "4:06 PM EST",  label: "🔄 TESTING" },
+  "Tokyo":       { accuracy: 0,    avg_error: 0,   action: "testing",  open_est: "—",            label: "🔄 TESTING" },
+  "Seoul":       { accuracy: 0,    avg_error: 0,   action: "testing",  open_est: "—",            label: "🔄 TESTING" },
+  "Singapore":   { accuracy: 0,    avg_error: 0,   action: "testing",  open_est: "—",            label: "🔄 TESTING" },
+  "Madrid":      { accuracy: 0,    avg_error: 0,   action: "testing",  open_est: "—",            label: "🔄 TESTING" },
+  "Munich":      { accuracy: 0,    avg_error: 0,   action: "testing",  open_est: "—",            label: "🔄 TESTING" },
+  "Milan":       { accuracy: 0,    avg_error: 0,   action: "testing",  open_est: "—",            label: "🔄 TESTING" },
+  "Warsaw":      { accuracy: 0,    avg_error: 0,   action: "testing",  open_est: "—",            label: "🔄 TESTING" },
+  "Beijing":     { accuracy: 0,    avg_error: 0,   action: "testing",  open_est: "—",            label: "🔄 TESTING" },
+  "Shanghai":    { accuracy: 0,    avg_error: 0,   action: "testing",  open_est: "—",            label: "🔄 TESTING" },
+  "Taipei":      { accuracy: 0,    avg_error: 0,   action: "testing",  open_est: "—",            label: "🔄 TESTING" },
+  "Tel Aviv":    { accuracy: 0,    avg_error: 0,   action: "testing",  open_est: "—",            label: "🔄 TESTING" },
+  "Buenos Aires":{ accuracy: 0,    avg_error: 0,   action: "testing",  open_est: "—",            label: "🔄 TESTING" },
+  "Sao Paulo":   { accuracy: 0,    avg_error: 0,   action: "testing",  open_est: "—",            label: "🔄 TESTING" },
+};
+
+let savedIds    = new Set(JSON.parse(localStorage.getItem('savedIds') || '[]'));
+let allSignals  = [];
+let journeyData = [];
+let autoTimer   = null;
 
 function showPage(name, el) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -305,114 +329,178 @@ function showPage(name, el) {
   document.getElementById('page-' + name).classList.add('active');
   el.classList.add('active');
   if (name === 'tracking') loadTracked();
+  if (name === 'accuracy')  renderAccuracy();
 }
 
-async function loadSignals() {
-  const btn = document.getElementById('refreshBtn');
-  const status = document.getElementById('statusBar');
-  const dot = document.getElementById('liveDot');
-
-  btn.disabled = true;
-  btn.textContent = '⏳ Loading...';
+// ── ACCURACY TAB ──────────────────────────────────────────
+async function loadAccuracy(days = 30) {
+  const status = document.getElementById('accStatus');
   status.className = 'status-bar loading';
-  status.textContent = 'Fetching signals from Polymarket...';
-  dot.className = 'dot';
+  status.textContent = `Loading forecast accuracy data (${days} days)... takes ~60 seconds`;
 
   try {
-    const res = await fetch('/early-signals');
+    const res  = await fetch(`/forecast/city-accuracy?days=${days}`);
     const data = await res.json();
-    allSignals = (data.signals || []).sort((a, b) => score(b) - score(a));
+
+    if (data.status === 'error') {
+      status.className = 'status-bar error';
+      status.textContent = '❌ ' + data.message;
+      return;
+    }
+
+    // Update CITY_ACCURACY with fresh data
+    if (data.city_stats) {
+      for (const [city, stats] of Object.entries(data.city_stats)) {
+        if (CITY_ACCURACY[city]) {
+          CITY_ACCURACY[city].accuracy  = stats.accuracy_pct;
+          CITY_ACCURACY[city].avg_error = stats.avg_error;
+          CITY_ACCURACY[city].days      = stats.days_tested;
+          CITY_ACCURACY[city].action    = stats.bet_big ? 'bet-big' : stats.caution ? 'caution' : 'avoid';
+          CITY_ACCURACY[city].label     = stats.bet_big ? '✅ BET BIG' : stats.caution ? '⚠️ CAUTION' : '❌ AVOID';
+        }
+      }
+    }
+
+    status.className = 'status-bar ok';
+    status.textContent = `✅ ${data.total_tested} forecasts tested across ${data.cities_tracked} cities`;
+
+    document.getElementById('accSummary').style.display = 'flex';
+    document.getElementById('accCities').textContent  = data.cities_tracked || 0;
+    document.getElementById('accBig').textContent     = (data.bet_big_cities || []).length;
+    document.getElementById('accOverall').textContent = (data.overall_accuracy || 0) + '%';
+    document.getElementById('accTotal').textContent   = data.total_tested || 0;
+
+    renderAccuracy();
+
+  } catch(e) {
+    status.className = 'status-bar error';
+    status.textContent = '❌ Failed to load accuracy data';
+  }
+}
+
+function renderAccuracy() {
+  document.getElementById('accTitle').style.display = 'block';
+  const grid = document.getElementById('cityGrid');
+
+  // Sort: bet-big first, then caution, then testing, then avoid
+  const order = { 'bet-big': 0, 'caution': 1, 'testing': 2, 'avoid': 3 };
+  const sorted = Object.entries(CITY_ACCURACY).sort((a, b) => {
+    const ao = order[a[1].action] ?? 2;
+    const bo = order[b[1].action] ?? 2;
+    if (ao !== bo) return ao - bo;
+    return b[1].accuracy - a[1].accuracy;
+  });
+
+  grid.innerHTML = sorted.map(([city, info]) => {
+    const isTesting = info.action === 'testing' || info.accuracy === 0;
+    const barColor  = info.accuracy >= 75 ? 'green' : info.accuracy >= 50 ? 'yellow' : 'red';
+    const accText   = isTesting ? 'Logging...' : info.accuracy + '%';
+    const errText   = isTesting ? '—' : info.avg_error + '°';
+    const daysText  = info.days ? info.days + ' days' : 'Collecting';
+    const badgeClass = isTesting ? 'caution' : info.action;
+
+    return `<div class="city-card ${isTesting ? '' : info.action}">
+      <div class="city-card-header">
+        <div class="city-name">${city}</div>
+        <div class="city-badge ${badgeClass}">${info.label}</div>
+      </div>
+      ${!isTesting ? `
+      <div class="accuracy-bar">
+        <div class="acc-label"><span>Model Accuracy</span><span>${accText}</span></div>
+        <div class="bar-track"><div class="bar-fill ${barColor}" style="width:${info.accuracy}%"></div></div>
+      </div>` : `
+      <div style="font-size:12px;color:#666;margin:10px 0">
+        Forecast logger running — accuracy data collecting daily
+      </div>`}
+      <div class="city-metrics">
+        <div class="c-metric"><div class="ml">Avg Error</div><div class="mv" style="color:${info.avg_error<=1.5?'#44ff88':info.avg_error<=2.5?'#ffcc44':'#ff6644'}">${errText}</div></div>
+        <div class="c-metric"><div class="ml">Data</div><div class="mv" style="color:#888">${daysText}</div></div>
+      </div>
+      <div class="open-time">🕐 Market opens: <span>${info.open_est || '—'}</span></div>
+    </div>`;
+  }).join('');
+}
+
+// ── SIGNALS TAB ───────────────────────────────────────────
+async function loadSignals() {
+  const btn    = document.getElementById('refreshBtn');
+  const status = document.getElementById('statusBar');
+  btn.disabled = true; btn.textContent = '⏳ Loading...';
+  status.className = 'status-bar loading';
+  status.textContent = 'Fetching signals from 3 weather models...';
+  document.getElementById('liveDot').className = 'dot';
+
+  try {
+    const res  = await fetch('/early-signals');
+    const data = await res.json();
+    allSignals = (data.signals || []).sort((a, b) => b.confidence - a.confidence);
 
     const now = new Date().toLocaleTimeString();
-    document.getElementById('lastUpdated').textContent = `${now}`;
-    dot.className = 'dot live';
+    document.getElementById('lastUpdated').textContent = now;
+    document.getElementById('liveDot').className = 'dot live';
     status.className = 'status-bar ok';
     status.textContent = `✅ ${allSignals.length} signals — ${now}`;
 
     renderSignals();
-    renderSummary();
-    document.getElementById('summary').style.display = 'flex';
-    document.getElementById('secTitle').style.display = 'block';
+
+    document.getElementById('sigSummary').style.display = 'flex';
+    document.getElementById('statTotal').textContent = allSignals.length;
+    document.getElementById('statBig').textContent   = allSignals.filter(s => CITY_ACCURACY[s.city]?.action === 'bet-big').length;
+    const avgConf = allSignals.length ? Math.round(allSignals.reduce((a,s)=>a+s.confidence,0)/allSignals.length) : 0;
+    document.getElementById('statConf').textContent  = avgConf + '%';
+    document.getElementById('statCities').textContent = new Set(allSignals.map(s=>s.city)).size;
+    document.getElementById('sigTitle').style.display = 'block';
+
   } catch(e) {
     status.className = 'status-bar error';
-    status.textContent = '❌ Failed to load — check app health';
+    status.textContent = '❌ Failed to load signals';
   }
-  btn.disabled = false;
-  btn.textContent = '🔄 Refresh';
-}
-
-function score(s) {
-  // Primary: model confidence score
-  // Secondary: days out (sooner = better)
-  // Tertiary: cheap price = bigger payout
-  const conf = s.confidence || 0;
-  const daysScore = Math.max(0, 5 - s.days_out) * 5;
-  const priceScore = s.entry_price < 0.02 ? 3 : s.entry_price < 0.035 ? 2 : 1;
-  return conf * 10 + daysScore + priceScore;
-}
-
-function getGap(s) {
-  const q = (s.question || '').toLowerCase();
-  const nums = (q.match(/-?\d+\.?\d*/g) || []).map(Number).filter(n => n > -50 && n < 150);
-  const target = nums.length ? nums.reduce((a,b)=>a+b,0)/nums.length : 0;
-  return Math.abs(target - (s.forecast||0));
-}
-
-function setFilter(val, el) {
-  currentFilter = val;
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  el.classList.add('active');
-  renderSignals();
+  btn.disabled = false; btn.textContent = '🔄 Refresh Signals';
 }
 
 function renderSignals() {
   const grid = document.getElementById('signalsGrid');
-  let list = allSignals;
-  if (currentFilter === '2') list = list.filter(s => s.days_out <= 2);
-  else if (currentFilter === '3') list = list.filter(s => s.days_out === 3);
-  else if (currentFilter === '4') list = list.filter(s => s.days_out >= 4);
-
-  if (!list.length) {
-    grid.innerHTML = '<div class="empty-state"><div class="icon">🔍</div><p>No signals for this filter</p></div>';
+  if (!allSignals.length) {
+    grid.innerHTML = '<div class="empty-state"><div style="font-size:48px">🔍</div><p>No signals found</p></div>';
     return;
   }
 
-  grid.innerHTML = list.map((s, i) => {
-    const isTop = i < 3;
-    const soon = s.days_out <= 2;
-    const win = (10 / s.entry_price).toFixed(0);
-    const pct = (s.entry_price * 100).toFixed(1);
-    const gap = getGap(s);
-    const match = Math.max(0, Math.min(100, (1 - gap/10)*100)).toFixed(0);
-    const matchColor = match > 70 ? '#44ff88' : match > 40 ? '#ffcc44' : '#ff6644';
-    const conf = s.confidence || match;
-    const confColor = conf > 70 ? 'green' : conf > 40 ? 'yellow' : 'blue';
-    const modelText = s.models ? `Models: ${s.models}` : `Forecast: ${s.forecast}°`;
+  grid.innerHTML = allSignals.map((s, i) => {
+    const acc     = CITY_ACCURACY[s.city] || {};
+    const isBig   = acc.action === 'bet-big';
+    const isCaut  = acc.action === 'caution';
+    const badgeClass = isBig ? 'big' : isCaut ? 'small' : 'skip';
+    const badgeText  = isBig ? '✅ BET BIG' : isCaut ? '⚠️ SMALL' : '⏭ SKIP';
+    const cardClass  = isBig ? s.city.toLowerCase().replace(' ','') : '';
+    const pct     = (s.entry_price * 100).toFixed(1);
+    const win     = (10 / s.entry_price).toFixed(0);
+    const conf    = s.confidence || 0;
+    const confColor = conf > 70 ? '#44ff88' : conf > 40 ? '#ffcc44' : '#44aaff';
+    const url     = `https://polymarket.com/event/${s.market_id}`;
     const isSaved = savedIds.has(s.market_id);
-    const url = `https://polymarket.com/event/${s.market_id}`;
 
-    return `<div class="signal-card ${isTop?'top':''}">
+    return `<div class="signal-card ${cardClass}">
       <div class="card-header">
-        <div class="city-name">${s.city}</div>
-        <div class="days-badge ${soon?'soon':''}">${s.days_out}d${isTop?' 🔥':''}</div>
+        <div class="s-city">${s.city}</div>
+        <div class="s-badge ${badgeClass}">${badgeText}</div>
       </div>
-      <div class="question">${s.question}</div>
-      <div class="metrics">
-        <div class="metric"><div class="m-label">Price</div><div class="m-value yellow">${pct}¢</div></div>
-        <div class="metric"><div class="m-label">Win/$10</div><div class="m-value green">$${win}</div></div>
-        <div class="metric"><div class="m-label">Confidence</div><div class="m-value ${confColor}">${conf}%</div></div>
+      <div class="s-question">${s.question}</div>
+      <div class="s-metrics">
+        <div class="s-metric"><div class="ml">Price</div><div class="mv" style="color:#ffcc44">${pct}¢</div></div>
+        <div class="s-metric"><div class="ml">Win/$10</div><div class="mv" style="color:#44ff88">$${win}</div></div>
+        <div class="s-metric"><div class="ml">Days Out</div><div class="mv" style="color:#888">${s.days_out}d</div></div>
       </div>
-      <div style="font-size:11px;color:#555;margin-bottom:8px">${modelText}</div>
-      <div class="match-bar">
-        <div class="match-label"><span>Model Confidence</span><span style="color:${confColor}">${conf}%</span></div>
-        <div class="bar-track"><div class="bar-fill" style="width:${conf}%"></div></div>
+      <div class="conf-bar">
+        <div class="conf-label"><span>Model Confidence</span><span style="color:${confColor}">${conf}%</span></div>
+        <div class="bar-track"><div class="bar-fill green" style="width:${conf}%"></div></div>
       </div>
+      <div style="font-size:11px;color:#555;margin-bottom:10px">${s.models || ''}</div>
       <div class="action-row">
         <button class="buy-btn" onclick="window.open('${url}','_blank')">Buy YES →</button>
-        <button class="save-btn ${isSaved?'saved':''}" id="save-${s.market_id}" 
-          data-mid="${s.market_id}" data-city="${s.city}" 
+        <button class="save-btn ${isSaved?'saved':''}" id="save-${s.market_id}"
+          data-mid="${s.market_id}" data-city="${s.city}"
           data-q="${(s.question||'').replace(/"/g,'').replace(/'/g,'')}"
-          data-price="${s.entry_price}" data-forecast="${s.forecast||0}" 
+          data-price="${s.entry_price}" data-forecast="${s.forecast||0}"
           data-days="${s.days_out}"
           onclick="saveSignalFromBtn(this)">
           ${isSaved ? '✓ Saved' : '+ Track'}
@@ -422,153 +510,110 @@ function renderSignals() {
   }).join('');
 }
 
-function renderSummary() {
-  document.getElementById('statTotal').textContent = allSignals.length;
-  const best = Math.max(...allSignals.map(s => 10/s.entry_price));
-  document.getElementById('statBest').textContent = `$${best.toFixed(0)}`;
-  const avg = allSignals.reduce((a,s)=>a+s.entry_price,0)/allSignals.length;
-  document.getElementById('statPrice').textContent = `${(avg*100).toFixed(1)}¢`;
-  document.getElementById('statCities').textContent = new Set(allSignals.map(s=>s.city)).size;
-  document.getElementById('statSoon').textContent = allSignals.filter(s=>s.days_out<=2).length;
-}
-
-async function saveSignalFromBtn(btn) {
-  const s = {
-    market_id: btn.dataset.mid,
-    city:       btn.dataset.city,
-    question:   btn.dataset.q,
-    entry_price: parseFloat(btn.dataset.price),
-    forecast:   parseFloat(btn.dataset.forecast),
-    days_out:   parseInt(btn.dataset.days),
-  };
-  await saveSignal(s);
-}
-
-async function saveSignal(s) {
-  if (savedIds.has(s.market_id)) return;
-  try {
-    const params = new URLSearchParams({
-      market_id: s.market_id, city: s.city, question: s.question,
-      entry_price: s.entry_price, forecast: s.forecast || 0, days_out: s.days_out
-    });
-    await fetch('/signals/save?' + params);
-    savedIds.add(s.market_id);
-    localStorage.setItem('savedIds', JSON.stringify([...savedIds]));
-    const btn = document.getElementById('save-' + s.market_id);
-    if (btn) { btn.textContent = '✓ Saved'; btn.classList.add('saved'); }
-  } catch(e) { alert('Save failed'); }
-}
-
+// ── TRACKING TAB ──────────────────────────────────────────
 async function loadTracked() {
   try {
-    const res = await fetch('/signals/tracked');
+    const res  = await fetch('/signals/tracked');
     const data = await res.json();
-
     if (data.total !== undefined) {
       document.getElementById('trackSummary').style.display = 'flex';
       document.getElementById('tTotal').textContent = data.total;
-      document.getElementById('tWins').textContent = data.wins;
-      document.getElementById('tRate').textContent = data.win_rate + '%';
+      document.getElementById('tWins').textContent  = data.wins;
+      document.getElementById('tRate').textContent  = data.win_rate + '%';
       const pnl = data.total_pnl;
-      const pnlEl = document.getElementById('tPnl');
-      pnlEl.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
-      pnlEl.className = 'value ' + (pnl >= 0 ? 'green' : 'red');
-      document.getElementById('tPending').textContent = data.pending;
+      const el  = document.getElementById('tPnl');
+      el.textContent = (pnl>=0?'+$':'-$') + Math.abs(pnl).toFixed(2);
+      el.className   = 'value ' + (pnl>=0?'green':'red');
     }
-
     const tbody = document.getElementById('trackBody');
     if (!data.signals || !data.signals.length) {
       tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#444;padding:40px">No tracked signals yet</td></tr>';
       return;
     }
-
     tbody.innerHTML = data.signals.map(s => {
       const outcome = s.outcome;
-      const pill = outcome === 'Yes' ? '<span class="pill yes">WIN ✓</span>'
-                 : outcome === 'No' ? '<span class="pill no">LOSS ✗</span>'
-                 : '<span class="pill pending">Pending</span>';
-      const pnl = s.pnl != null ? (s.pnl > 0 ? `<span style="color:#44ff88">+$${s.pnl.toFixed(2)}</span>` : `<span style="color:#ff4444">-$${Math.abs(s.pnl).toFixed(2)}</span>`) : '—';
+      const pill = outcome==='Yes'?'<span class="pill yes">WIN ✓</span>':outcome==='No'?'<span class="pill no">LOSS ✗</span>':'<span class="pill pending">Pending</span>';
+      const pnl  = s.pnl!=null?(s.pnl>0?`<span style="color:#44ff88">+$${s.pnl.toFixed(2)}</span>`:`<span style="color:#ff4444">-$${Math.abs(s.pnl).toFixed(2)}</span>`):'—';
       return `<tr>
         <td style="color:#666">${s.saved_at}</td>
         <td style="font-weight:600">${s.city}</td>
         <td style="color:#aaa;max-width:200px;font-size:12px">${s.question}</td>
         <td style="color:#ffcc44">${(s.entry_price*100).toFixed(1)}¢</td>
-        <td style="color:#44aaff">${s.forecast || '—'}°</td>
+        <td style="color:#44aaff">${s.forecast||'—'}°</td>
         <td>${s.days_out}d</td>
         <td>${pill}</td>
         <td>${pnl}</td>
       </tr>`;
     }).join('');
-  } catch(e) {
-    document.getElementById('trackBody').innerHTML = '<tr><td colspan="8" style="color:#ff4444;padding:20px">Error loading tracker</td></tr>';
-  }
+  } catch(e) {}
 }
 
-function toggleAuto() {
-  clearInterval(autoTimer);
-  if (document.getElementById('autoRefresh').checked) {
-    autoTimer = setInterval(loadSignals, 5*60*1000);
-  }
+// ── SAVE SIGNAL ───────────────────────────────────────────
+async function saveSignalFromBtn(btn) {
+  const s = { market_id: btn.dataset.mid, city: btn.dataset.city,
+    question: btn.dataset.q, entry_price: parseFloat(btn.dataset.price),
+    forecast: parseFloat(btn.dataset.forecast), days_out: parseInt(btn.dataset.days) };
+  await saveSignal(s);
+}
+async function saveSignal(s) {
+  if (savedIds.has(s.market_id)) return;
+  const params = new URLSearchParams(s);
+  await fetch('/signals/save?' + params);
+  savedIds.add(s.market_id);
+  localStorage.setItem('savedIds', JSON.stringify([...savedIds]));
+  const btn = document.getElementById('save-' + s.market_id);
+  if (btn) { btn.textContent = '✓ Saved'; btn.classList.add('saved'); }
 }
 
-let journeyData = [];
-
+// ── BACKTEST TAB ──────────────────────────────────────────
 async function runJourney(days) {
   const status = document.getElementById('btStatus');
   status.className = 'status-bar loading';
-  status.textContent = `Running price journey backtest — ${days} days of real data... (2-3 minutes)`;
+  status.textContent = `Running price journey backtest — ${days} days real data... (2-3 min)`;
   document.getElementById('btSummary').style.display = 'none';
-  document.getElementById('btTable').style.display = 'none';
-  document.getElementById('btTitle').style.display = 'none';
+  document.getElementById('btTable').style.display   = 'none';
+  document.getElementById('btTitle').style.display   = 'none';
   document.getElementById('journeyDetail').style.display = 'none';
 
   try {
-    const res = await fetch(`/backtest/journey?days=${days}&safety_nets=2`);
+    const res  = await fetch(`/backtest/journey?days=${days}&safety_nets=2`);
     const data = await res.json();
-
     if (data.status === 'error') {
       status.className = 'status-bar error';
-      status.textContent = '❌ Error: ' + data.message;
-      return;
+      status.textContent = '❌ ' + data.message; return;
     }
-
     journeyData = data.results || [];
     status.className = 'status-bar ok';
-    status.textContent = `✅ Done — ${data.processed} markets analyzed`;
+    status.textContent = `✅ ${data.processed} markets analyzed`;
 
     document.getElementById('btSummary').style.display = 'flex';
-    document.getElementById('btTotal').textContent = data.processed;
-    document.getElementById('btRate').textContent = data.win_rate + '%';
-
+    document.getElementById('btTotal').textContent  = data.processed;
+    document.getElementById('btRate').textContent   = data.win_rate + '%';
     const pnl = data.total_pnl;
-    const pnlEl = document.getElementById('btPnl');
-    pnlEl.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
-    pnlEl.className = 'value ' + (pnl >= 0 ? 'green' : 'red');
-
+    const pel = document.getElementById('btPnl');
+    pel.textContent = (pnl>=0?'+$':'-$') + Math.abs(pnl).toFixed(2);
+    pel.className   = 'value ' + (pnl>=0?'green':'red');
     const dp = data.daily_avg;
-    const dpEl = document.getElementById('btDaily');
-    dpEl.textContent = (dp >= 0 ? '+$' : '-$') + Math.abs(dp).toFixed(2) + '/day';
-    dpEl.className = 'value ' + (dp >= 0 ? 'green' : 'red');
-
+    const del_ = document.getElementById('btDaily');
+    del_.textContent = (dp>=0?'+$':'-$') + Math.abs(dp).toFixed(2) + '/day';
+    del_.className   = 'value ' + (dp>=0?'green':'red');
     document.getElementById('btWindow').textContent = data.avg_buy_window_hours + ' hrs';
 
     if (journeyData.length) {
       document.getElementById('btTitle').style.display = 'block';
       document.getElementById('btTable').style.display = 'table';
-      document.getElementById('btBody').innerHTML = journeyData.map((r, i) => {
+      document.getElementById('btBody').innerHTML = journeyData.map((r,i) => {
         const win = r.won_a_bet;
-        const pill = win ? '<span class="pill yes">WIN ✓</span>' : '<span class="pill no">LOSS ✗</span>';
-        const pnl = r.net_pnl >= 0
-          ? `<span style="color:#44ff88">+$${r.net_pnl.toFixed(2)}</span>`
-          : `<span style="color:#ff4444">-$${Math.abs(r.net_pnl).toFixed(2)}</span>`;
-        const window_color = r.buy_window_hours > 48 ? '#44ff88' : r.buy_window_hours > 24 ? '#ffcc44' : '#ff6644';
+        const pill = win?'<span class="pill yes">WIN ✓</span>':'<span class="pill no">LOSS ✗</span>';
+        const pnl  = r.net_pnl>=0?`<span style="color:#44ff88">+$${r.net_pnl.toFixed(2)}</span>`:`<span style="color:#ff4444">-$${Math.abs(r.net_pnl).toFixed(2)}</span>`;
+        const wc   = r.buy_window_hours>48?'#44ff88':r.buy_window_hours>24?'#ffcc44':'#ff6644';
         return `<tr onclick="showJourney(${i})" style="cursor:pointer">
           <td style="font-weight:600">${r.city}</td>
           <td style="color:#666">${r.date}</td>
           <td style="color:#44aaff;font-size:11px">${r.open_time_est}</td>
           <td style="color:#ffcc44">${r.open_price_c}¢</td>
           <td style="color:#888">${r.days_before}d</td>
-          <td style="color:${window_color}">${r.buy_window_hours}h</td>
+          <td style="color:${wc}">${r.buy_window_hours}h</td>
           <td style="color:#44aaff">${r.wu_actual}°</td>
           <td>${pill}</td>
           <td>${pnl}</td>
@@ -582,40 +627,34 @@ async function runJourney(days) {
 }
 
 function showJourney(idx) {
-  const r = journeyData[idx];
-  if (!r) return;
-
+  const r = journeyData[idx]; if (!r) return;
   document.getElementById('journeyDetail').style.display = 'block';
   document.getElementById('journeyTitle').textContent =
-    `${r.city} ${r.date} — WU actual: ${r.wu_actual}° — Open: ${r.open_time_est} at ${r.open_price_c}¢`;
-
-  // Price ticks
+    `${r.city} ${r.date} — WU: ${r.wu_actual}° — Open: ${r.open_time_est} at ${r.open_price_c}¢`;
   const ticks = r.price_journey || [];
   document.getElementById('journeyTicks').innerHTML = ticks.map(t => {
     const arrow = t.price_c > r.open_price_c ? '↑' : t.price_c < r.open_price_c ? '↓' : '→';
     const color = t.price_c > r.open_price_c*1.5 ? '#44ff88' : t.price_c > r.open_price_c ? '#ffcc44' : '#888';
     return `<div style="color:${color};padding:2px 0">${t.time_est}  ${arrow} ${t.price_c}¢</div>`;
   }).join('');
-
-  // Price doubled notice
-  if (r.price_doubled_at && r.price_doubled_at !== 'never doubled') {
+  if (r.price_doubled_at && r.price_doubled_at !== 'never doubled')
     document.getElementById('journeyTicks').innerHTML +=
-      `<div style="color:#ff88cc;margin-top:8px;font-weight:bold">⚠️ Price doubled at: ${r.price_doubled_at} — buy window closed</div>`;
-  }
-
-  // Bets
-  document.getElementById('journeyBets').innerHTML = (r.bets || []).map(b => {
-    const win = b.is_winner;
-    const color = win ? '#44ff88' : '#666';
-    return `<div style="color:${color};padding:2px 0">
-      ${win ? '✓ WIN' : '✗'} ${b.question} | Open: ${b.open_price}¢ → Final: ${b.final_price}¢
-    </div>`;
-  }).join('');
-
+      `<div style="color:#ff88cc;margin-top:8px;font-weight:bold">⚠️ Price doubled: ${r.price_doubled_at}</div>`;
+  document.getElementById('journeyBets').innerHTML = (r.bets||[]).map(b =>
+    `<div style="color:${b.is_winner?'#44ff88':'#666'};padding:2px 0">
+      ${b.is_winner?'✓ WIN':'✗'} ${b.question} | Open: ${b.open_price}¢ → Final: ${b.final_price}¢
+    </div>`).join('');
   document.getElementById('journeyDetail').scrollIntoView({behavior:'smooth'});
 }
 
-loadSignals();
+function toggleAuto() {
+  clearInterval(autoTimer);
+  if (document.getElementById('autoRefresh').checked)
+    autoTimer = setInterval(loadSignals, 5*60*1000);
+}
+
+// Load accuracy on start
+renderAccuracy();
 </script>
 </body>
 </html>
