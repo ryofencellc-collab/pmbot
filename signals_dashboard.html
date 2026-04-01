@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -9,20 +10,20 @@
 body { background: #0a0a0f; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
 
 header {
-  background: #12121a; border-bottom: 1px solid #222;
-  padding: 16px 24px; display: flex; align-items: center; justify-content: space-between;
+background: #12121a; border-bottom: 1px solid #222;
+padding: 16px 24px; display: flex; align-items: center; justify-content: space-between;
 }
 header h1 { font-size: 20px; font-weight: 700; color: #fff; }
 header h1 span { color: #7c6aff; }
 
 .nav-tabs {
-  display: flex; background: #12121a; border-bottom: 1px solid #1e1e2e;
-  padding: 0 24px; overflow-x: auto;
+display: flex; background: #12121a; border-bottom: 1px solid #1e1e2e;
+padding: 0 24px; overflow-x: auto;
 }
 .nav-tab {
-  padding: 12px 20px; font-size: 14px; font-weight: 600;
-  cursor: pointer; color: #666; border-bottom: 2px solid transparent;
-  transition: all 0.2s; white-space: nowrap;
+padding: 12px 20px; font-size: 14px; font-weight: 600;
+cursor: pointer; color: #666; border-bottom: 2px solid transparent;
+transition: all 0.2s; white-space: nowrap;
 }
 .nav-tab.active { color: #7c6aff; border-bottom-color: #7c6aff; }
 
@@ -30,21 +31,21 @@ header h1 span { color: #7c6aff; }
 .page.active { display: block; }
 
 .controls {
-  padding: 16px 24px; display: flex; gap: 12px;
-  align-items: center; flex-wrap: wrap; border-bottom: 1px solid #1a1a2a;
+padding: 16px 24px; display: flex; gap: 12px;
+align-items: center; flex-wrap: wrap; border-bottom: 1px solid #1a1a2a;
 }
 button {
-  background: #7c6aff; color: #fff; border: none;
-  padding: 10px 20px; border-radius: 8px; font-size: 14px;
-  font-weight: 600; cursor: pointer; transition: background 0.2s;
+background: #7c6aff; color: #fff; border: none;
+padding: 10px 20px; border-radius: 8px; font-size: 14px;
+font-weight: 600; cursor: pointer; transition: background 0.2s;
 }
 button:hover { background: #6a58e0; }
 button.secondary { background: #1e1e2e; border: 1px solid #333; color: #aaa; }
 button.secondary:hover { background: #2a2a3e; color: #fff; }
 
 .status-bar {
-  padding: 10px 24px; font-size: 12px; color: #666;
-  background: #0d0d14; border-bottom: 1px solid #1a1a2a;
+padding: 10px 24px; font-size: 12px; color: #666;
+background: #0d0d14; border-bottom: 1px solid #1a1a2a;
 }
 .status-bar.loading { color: #7c6aff; }
 .status-bar.error   { color: #ff4444; }
@@ -52,8 +53,8 @@ button.secondary:hover { background: #2a2a3e; color: #fff; }
 
 .summary { display: flex; gap: 12px; padding: 16px 24px; flex-wrap: wrap; }
 .stat {
-  background: #12121a; border: 1px solid #1e1e2e;
-  border-radius: 10px; padding: 12px 18px; min-width: 110px;
+background: #12121a; border: 1px solid #1e1e2e;
+border-radius: 10px; padding: 12px 18px; min-width: 110px;
 }
 .stat .label { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
 .stat .value { font-size: 20px; font-weight: 700; color: #fff; margin-top: 4px; }
@@ -64,18 +65,18 @@ button.secondary:hover { background: #2a2a3e; color: #fff; }
 .stat .value.blue   { color: #44aaff; }
 
 .section-title {
-  padding: 16px 24px 8px; font-size: 13px; font-weight: 600;
-  color: #666; text-transform: uppercase; letter-spacing: 1px;
+padding: 16px 24px 8px; font-size: 13px; font-weight: 600;
+color: #666; text-transform: uppercase; letter-spacing: 1px;
 }
 
 /* City accuracy cards */
 .city-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 12px; padding: 0 24px 24px;
+display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+gap: 12px; padding: 0 24px 24px;
 }
 .city-card {
-  background: #12121a; border: 1px solid #1e1e2e;
-  border-radius: 12px; padding: 16px; transition: border-color 0.2s;
+background: #12121a; border: 1px solid #1e1e2e;
+border-radius: 12px; padding: 16px; transition: border-color 0.2s;
 }
 .city-card.bet-big  { border-color: #44ff88; }
 .city-card.caution  { border-color: #ffcc44; }
@@ -105,12 +106,12 @@ button.secondary:hover { background: #2a2a3e; color: #fff; }
 
 /* Signals grid */
 .signals-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 12px; padding: 0 24px 24px;
+display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+gap: 12px; padding: 0 24px 24px;
 }
 .signal-card {
-  background: #12121a; border: 1px solid #1e1e2e;
-  border-radius: 12px; padding: 16px; transition: border-color 0.2s;
+background: #12121a; border: 1px solid #1e1e2e;
+border-radius: 12px; padding: 16px; transition: border-color 0.2s;
 }
 .signal-card:hover { border-color: #7c6aff; }
 .signal-card.seattle { border-color: #44ff88; }
@@ -134,15 +135,15 @@ button.secondary:hover { background: #2a2a3e; color: #fff; }
 
 .action-row { display: flex; gap: 8px; }
 .buy-btn {
-  flex: 1; padding: 8px; font-size: 13px; border-radius: 8px;
-  background: #1a2a1a; border: 1px solid #2a4a2a; color: #44ff88;
-  cursor: pointer; font-weight: 600; transition: all 0.2s;
+flex: 1; padding: 8px; font-size: 13px; border-radius: 8px;
+background: #1a2a1a; border: 1px solid #2a4a2a; color: #44ff88;
+cursor: pointer; font-weight: 600; transition: all 0.2s;
 }
 .buy-btn:hover { background: #2a4a2a; }
 .save-btn {
-  padding: 8px 12px; font-size: 12px; border-radius: 8px;
-  background: #1a1a2a; border: 1px solid #333; color: #7c6aff;
-  cursor: pointer; font-weight: 600; transition: all 0.2s;
+padding: 8px 12px; font-size: 12px; border-radius: 8px;
+background: #1a1a2a; border: 1px solid #333; color: #7c6aff;
+cursor: pointer; font-weight: 600; transition: all 0.2s;
 }
 .save-btn:hover  { background: #2a2a3e; }
 .save-btn.saved  { background: #2a2a1a; border-color: #ffcc44; color: #ffcc44; }
@@ -165,19 +166,20 @@ tr:hover td { background: #12121a; }
 
 /* Journey detail */
 .journey-detail {
-  margin: 0 24px 24px; background: #12121a;
-  border: 1px solid #1e1e2e; border-radius: 12px; padding: 16px;
+margin: 0 24px 24px; background: #12121a;
+border: 1px solid #1e1e2e; border-radius: 12px; padding: 16px;
 }
 
 @media (max-width:600px) {
-  .signals-grid,.city-grid { grid-template-columns:1fr; padding:0 12px 24px; }
-  .summary { padding:12px; }
-  .controls,.section-title { padding:12px; }
-  header { padding:12px; }
-  .track-table { margin:0 12px 24px; }
-  .nav-tabs { padding:0 12px; }
+.signals-grid,.city-grid { grid-template-columns:1fr; padding:0 12px 24px; }
+.summary { padding:12px; }
+.controls,.section-title { padding:12px; }
+header { padding:12px; }
+.track-table { margin:0 12px 24px; }
+.nav-tabs { padding:0 12px; }
 }
 </style>
+
 </head>
 <body>
 
@@ -197,6 +199,7 @@ tr:hover td { background: #12121a; }
 </div>
 
 <!-- ACCURACY PAGE -->
+
 <div class="page active" id="page-accuracy">
   <div class="controls">
     <button onclick="loadAccuracy()">🔄 Refresh Accuracy</button>
@@ -219,6 +222,7 @@ tr:hover td { background: #12121a; }
 </div>
 
 <!-- SIGNALS PAGE -->
+
 <div class="page" id="page-signals">
   <div class="controls">
     <button id="refreshBtn" onclick="loadSignals()">🔄 Refresh Signals</button>
@@ -241,6 +245,7 @@ tr:hover td { background: #12121a; }
 </div>
 
 <!-- TRACKING PAGE -->
+
 <div class="page" id="page-tracking">
   <div class="controls">
     <button onclick="loadTracked()">🔄 Refresh Tracker</button>
@@ -261,6 +266,7 @@ tr:hover td { background: #12121a; }
 </div>
 
 <!-- BACKTEST PAGE -->
+
 <div class="page" id="page-backtest">
   <div class="controls">
     <button onclick="runJourney(7)">Last 7 Days</button>
@@ -365,9 +371,11 @@ async function loadAccuracy(days = 30) {
     status.textContent = `✅ ${data.total_tested} forecasts tested across ${data.cities_tracked} cities`;
 
     document.getElementById('accSummary').style.display = 'flex';
-    document.getElementById('accCities').textContent  = data.cities_tracked || 0;
+    document.getElementById('accCities').textContent  = Object.keys(data.city_stats || {}).length || 0;
     document.getElementById('accBig').textContent     = (data.bet_big_cities || []).length;
-    document.getElementById('accOverall').textContent = (data.overall_accuracy || 0) + '%';
+    const tots = Object.values(data.city_stats||{});
+    const avgAcc = tots.length ? Math.round(tots.reduce((a,s)=>a+s.accuracy_pct,0)/tots.length) : 0;
+    document.getElementById('accOverall').textContent = avgAcc + '%';
     document.getElementById('accTotal').textContent   = data.total_tested || 0;
 
     renderAccuracy();
@@ -417,6 +425,19 @@ function renderAccuracy() {
         <div class="c-metric"><div class="ml">Data</div><div class="mv" style="color:#888">${daysText}</div></div>
       </div>
       <div class="open-time">🕐 Market opens: <span>${info.open_est || '—'}</span></div>
+      <div style="margin-top:10px;padding:10px;background:#0a0a0f;border-radius:8px;font-size:12px;line-height:1.8">
+        ${isTesting ? '<div style=color:#666>Collecting accuracy data daily — check back soon</div>' :
+          info.action==='bet-big' ?
+          '<div style=color:#44ff88;font-weight:700>✅ What to do:</div>' +
+          '<div style=color:#aaa>1. Open Polymarket at <b style=color:#44aaff>' + info.open_est + '</b></div>' +
+          '<div style=color:#aaa>2. Go to Live Signals tab — find ' + city + '</div>' +
+          '<div style=color:#aaa>3. Buy forecast range + 2 above + 2 below</div>' +
+          '<div style=color:#44ff88;font-weight:700>$50 per range = $250 total bet</div>'
+          :
+          '<div style=color:#ffcc44;font-weight:700>⚠️ Small bets only:</div>' +
+          '<div style=color:#aaa>$10 per range, only when all 3 models agree</div>'
+        }
+      </div>
     </div>`;
   }).join('');
 }
@@ -655,6 +676,10 @@ function toggleAuto() {
 
 // Load accuracy on start
 renderAccuracy();
+
+// Auto-load signals on page load
+loadSignals();
 </script>
+
 </body>
 </html>
