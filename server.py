@@ -920,6 +920,29 @@ def market_times():
         return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
 
 
+@app.get("/backtest/journey")
+def backtest_journey(days: int = 30, safety_nets: int = 2, city: str = None):
+    """
+    Complete price journey backtest.
+    Shows every price tick from open to resolution in EST.
+    Shows exactly how long the buy window is before price moves.
+    100% real data — Polymarket CLOB + WU temps.
+    """
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(__file__))
+        from backtest_price_journey import run_price_journey_backtest
+        cities = [city] if city else None
+        return run_price_journey_backtest(
+            days_back=days,
+            safety_nets=safety_nets,
+            cities=cities,
+        )
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
+
+
 @app.get("/backtest/v2")
 def backtest_v2(days: int = 30, safety_nets: int = 2):
     """
@@ -1543,6 +1566,29 @@ def market_times():
             "summary": summary,
             "note": "Based on real created_at timestamps from our DB"
         }
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
+
+
+@app.get("/backtest/journey")
+def backtest_journey(days: int = 30, safety_nets: int = 2, city: str = None):
+    """
+    Complete price journey backtest.
+    Shows every price tick from open to resolution in EST.
+    Shows exactly how long the buy window is before price moves.
+    100% real data — Polymarket CLOB + WU temps.
+    """
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(__file__))
+        from backtest_price_journey import run_price_journey_backtest
+        cities = [city] if city else None
+        return run_price_journey_backtest(
+            days_back=days,
+            safety_nets=safety_nets,
+            cities=cities,
+        )
     except Exception as e:
         import traceback
         return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
