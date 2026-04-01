@@ -136,9 +136,8 @@ def run_scheduler():
                 except Exception as e:
                     print(f"[SCHEDULER] Morning error: {e}")
 
-        # Every 6 hours: log all 3 model forecasts with timestamps
+        # Every 6 hours: log all 3 model forecasts + rebuild city cards cache
         if minute < 5 and hour in [0, 6, 12, 18]:
-            log_key = f"{today}-{hour}-forecast"
             try:
                 from forecast_logger import log_all_forecasts, fill_wu_actuals
                 log_all_forecasts()
@@ -146,6 +145,33 @@ def run_scheduler():
                 print(f"[SCHEDULER] Forecasts logged at {hour}:00 UTC")
             except Exception as e:
                 print(f"[SCHEDULER] Forecast log error: {e}")
+
+            # Rebuild city cards cache
+            try:
+                from city_cards import get_all_city_cards
+                import json as _json
+                cards = get_all_city_cards(days_out=4)
+                conn  = get_conn()
+                c     = conn.cursor()
+                c.execute("""
+                    CREATE TABLE IF NOT EXISTS cache (
+                        key TEXT PRIMARY KEY,
+                        value TEXT,
+                        updated_at TEXT
+                    )
+                """)
+                from datetime import datetime, timezone as _tz, timedelta as _td
+                est_now = datetime.now(_tz(td(hours=-5))).strftime("%Y-%m-%d %I:%M %p EST")
+                c.execute("""
+                    INSERT INTO cache (key, value, updated_at)
+                    VALUES ('city_cards', %s, %s)
+                    ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
+                """, (_json.dumps(cards), est_now))
+                conn.commit()
+                conn.close()
+                print(f"[SCHEDULER] City cards cached at {est_now}")
+            except Exception as e:
+                print(f"[SCHEDULER] City cards cache error: {e}")
 
         # Every 30 min: check outcomes in real time
         check_key = f"{today}-{hour}-{minute // 30}"
@@ -1935,17 +1961,61 @@ if __name__ == "__main__":
 
 
 @app.get("/city-cards")
-def city_cards_endpoint(days_out: int = 4):
+def city_cards_endpoint(days_out: int = 4, refresh: bool = False):
     """
     Get complete betting cards for all cities.
-    Shows forecast for resolution date + ranges to buy + prices.
+    Serves from cache instantly. Cache refreshes every 6 hours.
+    Pass ?refresh=true to force rebuild.
     """
+    import json as _json
     try:
+        # Try cache first (unless forced refresh)
+        if not refresh:
+            try:
+                conn = get_conn()
+                c    = conn.cursor()
+                c.execute("SELECT value, updated_at FROM cache WHERE key='city_cards'")
+                row = c.fetchone()
+                conn.close()
+                if row:
+                    return {
+                        "days_out":   days_out,
+                        "from_cache": True,
+                        "updated_at": row["updated_at"],
+                        "cards":      _json.loads(row["value"]),
+                    }
+            except Exception:
+                pass
+
+        # Cache miss or forced refresh — build fresh
         import sys, os
         sys.path.insert(0, os.path.dirname(__file__))
         from city_cards import get_all_city_cards
-        cards = get_all_city_cards(days_out=days_out)
-        return {"days_out": days_out, "cards": cards}
+        from datetime import datetime, timezone as _tz, timedelta as _td
+        cards   = get_all_city_cards(days_out=days_out)
+        est_now = datetime.now(_tz(_td(hours=-5))).strftime("%Y-%m-%d %I:%M %p EST")
+
+        # Save to cache
+        try:
+            conn = get_conn()
+            c    = conn.cursor()
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS cache (
+                    key TEXT PRIMARY KEY, value TEXT, updated_at TEXT
+                )
+            """)
+            c.execute("""
+                INSERT INTO cache (key, value, updated_at)
+                VALUES ('city_cards', %s, %s)
+                ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
+            """, (_json.dumps(cards), est_now))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[CACHE] Save error: {e}")
+
+        return {"days_out": days_out, "from_cache": False, "updated_at": est_now, "cards": cards}
+
     except Exception as e:
         import traceback
         return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
