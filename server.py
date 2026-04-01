@@ -1934,6 +1934,39 @@ if __name__ == "__main__":
     uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=False)
 
 
+@app.get("/city-cards")
+def city_cards_endpoint(days_out: int = 4):
+    """
+    Get complete betting cards for all cities.
+    Shows forecast for resolution date + ranges to buy + prices.
+    """
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(__file__))
+        from city_cards import get_all_city_cards
+        cards = get_all_city_cards(days_out=days_out)
+        return {"days_out": days_out, "cards": cards}
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
+
+
+@app.get("/city-card/{city}")
+def single_city_card(city: str, days_out: int = 4):
+    """Get betting card for a single city."""
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(__file__))
+        from city_cards import get_city_card, ALL_CITIES
+        config = ALL_CITIES.get(city)
+        if not config:
+            return {"error": f"City {city} not found"}
+        return get_city_card(city, config, days_out=days_out)
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
+
+
 @app.get("/forecast/log-now")
 def log_forecasts_now():
     """Manually trigger forecast logging right now."""
