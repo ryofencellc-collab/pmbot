@@ -215,9 +215,9 @@
 <!-- BACKTEST PAGE -->
 <div class="page" id="page-backtest">
   <div class="controls">
-    <button onclick="runHondaBacktest(7)">Last 7 Days</button>
-    <button onclick="runHondaBacktest(14)" style="background:#1e1e2e;border:1px solid #333;color:#aaa">Last 14 Days</button>
-    <button onclick="runHondaBacktest(30)" style="background:#1e1e2e;border:1px solid #333;color:#aaa">Last 30 Days</button>
+    <button onclick="runJourney(7)">Last 7 Days</button>
+    <button onclick="runJourney(14)" style="background:#1e1e2e;border:1px solid #333;color:#aaa">Last 14 Days</button>
+    <button onclick="runJourney(30)" style="background:#1e1e2e;border:1px solid #333;color:#aaa">Last 30 Days</button>
   </div>
   <div class="status-bar" id="btStatus">Click a button to run Honda strategy backtest</div>
 
@@ -227,22 +227,33 @@
   </div>
 
   <div class="summary" id="btSummary" style="display:none">
-    <div class="stat"><div class="label">Forecast Bets</div><div class="value purple" id="btFBets">0</div></div>
-    <div class="stat"><div class="label">Forecast Win%</div><div class="value yellow" id="btFRate">—</div></div>
-    <div class="stat"><div class="label">Forecast P&L</div><div class="value green" id="btFPnl">$0</div></div>
-    <div class="stat"><div class="label">Lottery Wins</div><div class="value green" id="btLWins">0</div></div>
-    <div class="stat"><div class="label">Lottery P&L</div><div class="value green" id="btLPnl">$0</div></div>
+    <div class="stat"><div class="label">Markets</div><div class="value purple" id="btTotal">0</div></div>
+    <div class="stat"><div class="label">Win Rate</div><div class="value yellow" id="btRate">—</div></div>
+    <div class="stat"><div class="label">Total P&L</div><div class="value green" id="btPnl">$0</div></div>
     <div class="stat"><div class="label">Daily Avg</div><div class="value green" id="btDaily">$0</div></div>
+    <div class="stat"><div class="label">Avg Buy Window</div><div class="value blue" id="btWindow">—</div></div>
   </div>
 
-  <div class="section-title" id="btTitle" style="display:none">📋 Forecast Bet Results</div>
+  <div class="section-title" id="btTitle" style="display:none">📋 Price Journey Results — Click any row to see full price history</div>
   <div class="track-table">
     <table id="btTable" style="display:none">
       <thead>
-        <tr><th>Date</th><th>City</th><th>Question</th><th>Price</th><th>Gap</th><th>Outcome</th><th>P&L</th></tr>
+        <tr>
+          <th>City</th><th>Date</th><th>Open Time EST</th>
+          <th>Open Price</th><th>Days Before</th>
+          <th>Buy Window</th><th>WU Temp</th>
+          <th>Won?</th><th>P&L</th>
+        </tr>
       </thead>
       <tbody id="btBody"></tbody>
     </table>
+  </div>
+  <div id="journeyDetail" style="display:none;margin:0 24px 24px;background:#12121a;border:1px solid #1e1e2e;border-radius:12px;padding:16px">
+    <div style="font-size:13px;font-weight:700;color:#fff;margin-bottom:12px" id="journeyTitle"></div>
+    <div style="font-size:12px;color:#888;margin-bottom:8px">Full price journey (every significant price change):</div>
+    <div id="journeyTicks" style="font-family:monospace;font-size:12px;max-height:300px;overflow-y:auto"></div>
+    <div style="margin-top:12px;font-size:12px;color:#888">Bets placed:</div>
+    <div id="journeyBets" style="font-size:12px;margin-top:6px"></div>
   </div>
 </div>
 
@@ -500,16 +511,19 @@ function toggleAuto() {
   }
 }
 
-async function runHondaBacktest(days) {
+let journeyData = [];
+
+async function runJourney(days) {
   const status = document.getElementById('btStatus');
   status.className = 'status-bar loading';
-  status.textContent = `Running Honda strategy backtest over ${days} days... (30-60 seconds)`;
+  status.textContent = `Running price journey backtest — ${days} days of real data... (2-3 minutes)`;
   document.getElementById('btSummary').style.display = 'none';
   document.getElementById('btTable').style.display = 'none';
   document.getElementById('btTitle').style.display = 'none';
+  document.getElementById('journeyDetail').style.display = 'none';
 
   try {
-    const res = await fetch(`/backtest/honda?days=${days}`);
+    const res = await fetch(`/backtest/journey?days=${days}&safety_nets=2`);
     const data = await res.json();
 
     if (data.status === 'error') {
@@ -518,43 +532,44 @@ async function runHondaBacktest(days) {
       return;
     }
 
+    journeyData = data.results || [];
     status.className = 'status-bar ok';
-    status.textContent = `✅ Done — ${data.forecast.bets} forecast bets + ${data.lottery.bets} lottery bets simulated`;
+    status.textContent = `✅ Done — ${data.processed} markets analyzed`;
 
     document.getElementById('btSummary').style.display = 'flex';
-    document.getElementById('btFBets').textContent = data.forecast.bets;
-    document.getElementById('btFRate').textContent = data.forecast.win_rate + '%';
+    document.getElementById('btTotal').textContent = data.processed;
+    document.getElementById('btRate').textContent = data.win_rate + '%';
 
-    const fp = data.forecast.total_pnl;
-    const fpEl = document.getElementById('btFPnl');
-    fpEl.textContent = (fp >= 0 ? '+$' : '-$') + Math.abs(fp).toFixed(2);
-    fpEl.className = 'value ' + (fp >= 0 ? 'green' : 'red');
+    const pnl = data.total_pnl;
+    const pnlEl = document.getElementById('btPnl');
+    pnlEl.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
+    pnlEl.className = 'value ' + (pnl >= 0 ? 'green' : 'red');
 
-    document.getElementById('btLWins').textContent = data.lottery.wins;
-
-    const lp = data.lottery.total_pnl;
-    const lpEl = document.getElementById('btLPnl');
-    lpEl.textContent = (lp >= 0 ? '+$' : '-$') + Math.abs(lp).toFixed(2);
-    lpEl.className = 'value ' + (lp >= 0 ? 'green' : 'red');
-
-    const dp = data.combined.daily_avg;
+    const dp = data.daily_avg;
     const dpEl = document.getElementById('btDaily');
     dpEl.textContent = (dp >= 0 ? '+$' : '-$') + Math.abs(dp).toFixed(2) + '/day';
     dpEl.className = 'value ' + (dp >= 0 ? 'green' : 'red');
 
-    if (data.forecast.results && data.forecast.results.length) {
+    document.getElementById('btWindow').textContent = data.avg_buy_window_hours + ' hrs';
+
+    if (journeyData.length) {
       document.getElementById('btTitle').style.display = 'block';
       document.getElementById('btTable').style.display = 'table';
-      document.getElementById('btBody').innerHTML = data.forecast.results.map(r => {
-        const win = r.outcome === 'Yes';
+      document.getElementById('btBody').innerHTML = journeyData.map((r, i) => {
+        const win = r.won_a_bet;
         const pill = win ? '<span class="pill yes">WIN ✓</span>' : '<span class="pill no">LOSS ✗</span>';
-        const pnl = win ? `<span style="color:#44ff88">+$${r.pnl.toFixed(2)}</span>` : `<span style="color:#ff4444">-$${Math.abs(r.pnl).toFixed(2)}</span>`;
-        return `<tr>
-          <td style="color:#666">${r.date}</td>
+        const pnl = r.net_pnl >= 0
+          ? `<span style="color:#44ff88">+$${r.net_pnl.toFixed(2)}</span>`
+          : `<span style="color:#ff4444">-$${Math.abs(r.net_pnl).toFixed(2)}</span>`;
+        const window_color = r.buy_window_hours > 48 ? '#44ff88' : r.buy_window_hours > 24 ? '#ffcc44' : '#ff6644';
+        return `<tr onclick="showJourney(${i})" style="cursor:pointer">
           <td style="font-weight:600">${r.city}</td>
-          <td style="color:#aaa;font-size:12px">${r.question}</td>
-          <td style="color:#ffcc44">${r.price}¢</td>
-          <td style="color:#44aaff">${r.gap}°</td>
+          <td style="color:#666">${r.date}</td>
+          <td style="color:#44aaff;font-size:11px">${r.open_time_est}</td>
+          <td style="color:#ffcc44">${r.open_price_c}¢</td>
+          <td style="color:#888">${r.days_before}d</td>
+          <td style="color:${window_color}">${r.buy_window_hours}h</td>
+          <td style="color:#44aaff">${r.wu_actual}°</td>
           <td>${pill}</td>
           <td>${pnl}</td>
         </tr>`;
@@ -562,8 +577,42 @@ async function runHondaBacktest(days) {
     }
   } catch(e) {
     status.className = 'status-bar error';
-    status.textContent = '❌ Failed to run backtest';
+    status.textContent = '❌ Failed: ' + e.message;
   }
+}
+
+function showJourney(idx) {
+  const r = journeyData[idx];
+  if (!r) return;
+
+  document.getElementById('journeyDetail').style.display = 'block';
+  document.getElementById('journeyTitle').textContent =
+    `${r.city} ${r.date} — WU actual: ${r.wu_actual}° — Open: ${r.open_time_est} at ${r.open_price_c}¢`;
+
+  // Price ticks
+  const ticks = r.price_journey || [];
+  document.getElementById('journeyTicks').innerHTML = ticks.map(t => {
+    const arrow = t.price_c > r.open_price_c ? '↑' : t.price_c < r.open_price_c ? '↓' : '→';
+    const color = t.price_c > r.open_price_c*1.5 ? '#44ff88' : t.price_c > r.open_price_c ? '#ffcc44' : '#888';
+    return `<div style="color:${color};padding:2px 0">${t.time_est}  ${arrow} ${t.price_c}¢</div>`;
+  }).join('');
+
+  // Price doubled notice
+  if (r.price_doubled_at && r.price_doubled_at !== 'never doubled') {
+    document.getElementById('journeyTicks').innerHTML +=
+      `<div style="color:#ff88cc;margin-top:8px;font-weight:bold">⚠️ Price doubled at: ${r.price_doubled_at} — buy window closed</div>`;
+  }
+
+  // Bets
+  document.getElementById('journeyBets').innerHTML = (r.bets || []).map(b => {
+    const win = b.is_winner;
+    const color = win ? '#44ff88' : '#666';
+    return `<div style="color:${color};padding:2px 0">
+      ${win ? '✓ WIN' : '✗'} ${b.question} | Open: ${b.open_price}¢ → Final: ${b.final_price}¢
+    </div>`;
+  }).join('');
+
+  document.getElementById('journeyDetail').scrollIntoView({behavior:'smooth'});
 }
 
 loadSignals();
