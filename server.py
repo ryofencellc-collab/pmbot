@@ -136,6 +136,17 @@ def run_scheduler():
                 except Exception as e:
                     print(f"[SCHEDULER] Morning error: {e}")
 
+        # Every 6 hours: log all 3 model forecasts with timestamps
+        if minute < 5 and hour in [0, 6, 12, 18]:
+            log_key = f"{today}-{hour}-forecast"
+            try:
+                from forecast_logger import log_all_forecasts, fill_wu_actuals
+                log_all_forecasts()
+                fill_wu_actuals()
+                print(f"[SCHEDULER] Forecasts logged at {hour}:00 UTC")
+            except Exception as e:
+                print(f"[SCHEDULER] Forecast log error: {e}")
+
         # Every 30 min: check outcomes in real time
         check_key = f"{today}-{hour}-{minute // 30}"
         if last_outcome != check_key:
@@ -1921,6 +1932,86 @@ def dashboard():
 
 if __name__ == "__main__":
     uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=False)
+
+
+@app.get("/forecast/log-now")
+def log_forecasts_now():
+    """Manually trigger forecast logging right now."""
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(__file__))
+        from forecast_logger import log_all_forecasts, fill_wu_actuals
+        logged  = log_all_forecasts()
+        filled  = fill_wu_actuals()
+        return {"status": "done", "logged": logged, "message": "Forecasts saved with timestamp"}
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
+
+
+@app.get("/forecast/history")
+def forecast_history(city: str = None, days: int = 7):
+    """
+    Show full forecast history with timestamps.
+    Shows how GFS/UKMO/MF changed over time for each city/date.
+    This is how we prove model accuracy 4 days out.
+    """
+    try:
+        conn = get_conn()
+        c    = conn.cursor()
+
+        if city:
+            c.execute("""
+                SELECT city, target_date, days_until_resolution,
+                       logged_at_est, gfs_temp, ukmo_temp, mf_temp,
+                       consensus_temp, spread, unit, wu_actual
+                FROM forecast_log
+                WHERE city = %s
+                AND target_date >= (CURRENT_DATE - %s)::TEXT
+                ORDER BY city, target_date, logged_at_utc
+            """, (city, days))
+        else:
+            c.execute("""
+                SELECT city, target_date, days_until_resolution,
+                       logged_at_est, gfs_temp, ukmo_temp, mf_temp,
+                       consensus_temp, spread, unit, wu_actual
+                FROM forecast_log
+                WHERE target_date >= (CURRENT_DATE - %s)::TEXT
+                ORDER BY city, target_date, logged_at_utc
+                LIMIT 1000
+            """, (days,))
+
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+
+        # Group by city+date to show forecast evolution
+        grouped = {}
+        for r in rows:
+            key = f"{r['city']}_{r['target_date']}"
+            if key not in grouped:
+                grouped[key] = {
+                    "city":        r["city"],
+                    "target_date": r["target_date"],
+                    "wu_actual":   r["wu_actual"],
+                    "snapshots":   []
+                }
+            grouped[key]["snapshots"].append({
+                "logged_at":    r["logged_at_est"],
+                "days_out":     r["days_until_resolution"],
+                "gfs":          r["gfs_temp"],
+                "ukmo":         r["ukmo_temp"],
+                "mf":           r["mf_temp"],
+                "consensus":    r["consensus_temp"],
+                "spread":       r["spread"],
+            })
+
+        return {
+            "total_snapshots": len(rows),
+            "city_dates":      len(grouped),
+            "data":            list(grouped.values()),
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 @app.get("/forecast/city-accuracy")
