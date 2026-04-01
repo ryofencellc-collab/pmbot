@@ -50,8 +50,13 @@ def init_db():
         unit TEXT,                 -- C or F
         wu_actual REAL,            -- filled in after resolution
         UNIQUE(city, target_date, logged_at_utc)
-    )"""
-    )
+    )""")
+
+    # Add index for fast lookups
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_forecast_log_city_date
+        ON forecast_log(city, target_date)
+    """)
 
     # Add missing columns to markets (safe migrations)
     migrations = [
