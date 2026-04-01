@@ -1923,6 +1923,126 @@ if __name__ == "__main__":
     uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=False)
 
 
+@app.get("/forecast/city-accuracy")
+def forecast_city_accuracy(days: int = 30):
+    """
+    Test Open-Meteo accuracy vs WU actuals per city.
+    Shows which cities to bet big on RIGHT NOW.
+    Uses real historical data — no simulation.
+    """
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(__file__))
+        from forecast_accuracy_test import run_accuracy_test
+        return run_accuracy_test(days_back=days)
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
+
+
+@app.get("/forecast/accuracy")
+def forecast_accuracy():
+    """
+    Compare our logged forecasts vs WU actual temps.
+    Shows which cities our models are most accurate in.
+    Only uses real logged data — no simulation.
+    """
+    try:
+        from forecast_logger import fetch_wu_temp
+        conn = get_conn()
+        c    = conn.cursor()
+
+        # Get all logged forecasts where target_date has passed
+        c.execute("""
+            SELECT city, target_date, days_until_resolution,
+                   gfs_temp, ukmo_temp, mf_temp, consensus_temp,
+                   spread, unit, wu_actual, logged_at_est
+            FROM forecast_log
+            WHERE target_date < CURRENT_DATE::TEXT
+            AND consensus_temp IS NOT NULL
+            ORDER BY city, target_date, days_until_resolution
+        """)
+        logs = [dict(r) for r in c.fetchall()]
+        conn.close()
+
+        if not logs:
+            return {
+                "status": "no_data",
+                "message": "No forecast logs yet. Logger started today — check back in a few days.",
+                "tip": "The forecast_logger runs every morning and logs GFS+UKMO+MF for all cities."
+            }
+
+        # Fill in WU actuals if missing
+        results  = []
+        by_city  = {}
+
+        for log in logs:
+            city     = log["city"]
+            date_str = log["target_date"]
+            wu       = log["wu_actual"]
+
+            if wu is None:
+                wu = fetch_wu_temp(city, date_str)
+
+            if wu is None:
+                continue
+
+            consensus = log["consensus_temp"]
+            error     = round(abs(consensus - wu), 1)
+            correct   = error <= 2  # within 2 degrees = accurate
+
+            entry = {
+                "city":       city,
+                "date":       date_str,
+                "days_out":   log["days_until_resolution"],
+                "gfs":        log["gfs_temp"],
+                "ukmo":       log["ukmo_temp"],
+                "mf":         log["mf_temp"],
+                "consensus":  consensus,
+                "spread":     log["spread"],
+                "wu_actual":  wu,
+                "error":      error,
+                "correct":    correct,
+                "logged_at":  log["logged_at_est"],
+            }
+            results.append(entry)
+
+            if city not in by_city:
+                by_city[city] = []
+            by_city[city].append(entry)
+
+        # City accuracy summary
+        city_summary = {}
+        for city, entries in by_city.items():
+            correct = [e for e in entries if e["correct"]]
+            accuracy = round(len(correct)/len(entries)*100, 1) if entries else 0
+            avg_error = round(sum(e["error"] for e in entries)/len(entries), 1) if entries else 0
+            city_summary[city] = {
+                "total_forecasts": len(entries),
+                "correct":         len(correct),
+                "accuracy":        accuracy,
+                "avg_error":       avg_error,
+                "bet_here":        accuracy >= 70,
+            }
+
+        # Sort cities by accuracy
+        ranked = sorted(city_summary.items(), key=lambda x: -x[1]["accuracy"])
+
+        return {
+            "total_forecasts": len(results),
+            "cities_tracked":  len(by_city),
+            "overall_accuracy": round(sum(1 for r in results if r["correct"])/len(results)*100, 1) if results else 0,
+            "city_rankings":   dict(ranked),
+            "bet_these_cities": [c for c, s in ranked if s["bet_here"]],
+            "avoid_these":     [c for c, s in ranked if not s["bet_here"]],
+            "raw_results":     results,
+        }
+
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
+
+
 @app.get("/research/market-open-times")
 def market_open_times():
     """
