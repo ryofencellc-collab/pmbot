@@ -31,7 +31,7 @@ MAX_PRICE        = 0.05    # buy cheap — 4-7 days out before market prices it
 MIN_PRICE        = 0.001   # ignore dead markets
 DAYS_AHEAD       = 7
 DAYS_MIN         = 4       # minimum 4 days out — get in early and cheap
-FORECAST_WINDOW  = 2       # only 2° either side of forecast — tight match only
+FORECAST_WINDOW  = 3       # 3° window — enough for 4-day forecasts, tight enough to win
 CONSENSUS_WINDOW = 3       # max spread between models
 
 # Open-Meteo model codes (all free)
