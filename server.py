@@ -67,6 +67,15 @@ def run_scheduler():
                     print(f"[SCHEDULER] Ingest error: {e}")
                 # Then run morning session
                 # Real money trading — completely independent
+                # Log forecasts every morning — Option B
+                try:
+                    from forecast_logger import log_all_forecasts, fill_wu_actuals
+                    log_all_forecasts()
+                    fill_wu_actuals()
+                    print("[SCHEDULER] Forecasts logged")
+                except Exception as e:
+                    print(f"[SCHEDULER] Forecast log error: {e}")
+
                 try:
                     import os
                     if os.getenv("TRADING_MODE") == "real":
@@ -911,6 +920,55 @@ def market_times():
         return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
 
 
+@app.get("/backtest/v2")
+def backtest_v2(days: int = 30, safety_nets: int = 2):
+    """
+    100% Real Data Backtest v2.
+    Uses real Polymarket price history + real WU temps.
+    Tests: buy forecast range + safety_nets on each side.
+    Shows exact market open times in EST.
+    """
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(__file__))
+        from backtest_real import run_backtest
+        return run_backtest(days_back=days, safety_nets=safety_nets)
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
+
+
+@app.get("/forecast/log")
+def get_forecast_log(city: str = None, days: int = 7):
+    """
+    Show logged forecasts with timestamps.
+    Lets you see how model accuracy changes
+    from 4 days out to 1 day out.
+    """
+    try:
+        conn = get_conn()
+        c    = conn.cursor()
+        if city:
+            c.execute("""
+                SELECT * FROM forecast_log
+                WHERE city = %s
+                AND target_date >= (CURRENT_DATE - %s)::TEXT
+                ORDER BY target_date, logged_at_utc
+            """, (city, days))
+        else:
+            c.execute("""
+                SELECT * FROM forecast_log
+                WHERE target_date >= (CURRENT_DATE - %s)::TEXT
+                ORDER BY city, target_date, logged_at_utc
+                LIMIT 500
+            """, (days,))
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+        return {"count": len(rows), "logs": rows}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 @app.get("/backtest/real")
 def backtest_real(days: int = 30, max_price: float = 0.05, min_days: int = 3):
     """
@@ -1488,6 +1546,55 @@ def market_times():
     except Exception as e:
         import traceback
         return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
+
+
+@app.get("/backtest/v2")
+def backtest_v2(days: int = 30, safety_nets: int = 2):
+    """
+    100% Real Data Backtest v2.
+    Uses real Polymarket price history + real WU temps.
+    Tests: buy forecast range + safety_nets on each side.
+    Shows exact market open times in EST.
+    """
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(__file__))
+        from backtest_real import run_backtest
+        return run_backtest(days_back=days, safety_nets=safety_nets)
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
+
+
+@app.get("/forecast/log")
+def get_forecast_log(city: str = None, days: int = 7):
+    """
+    Show logged forecasts with timestamps.
+    Lets you see how model accuracy changes
+    from 4 days out to 1 day out.
+    """
+    try:
+        conn = get_conn()
+        c    = conn.cursor()
+        if city:
+            c.execute("""
+                SELECT * FROM forecast_log
+                WHERE city = %s
+                AND target_date >= (CURRENT_DATE - %s)::TEXT
+                ORDER BY target_date, logged_at_utc
+            """, (city, days))
+        else:
+            c.execute("""
+                SELECT * FROM forecast_log
+                WHERE target_date >= (CURRENT_DATE - %s)::TEXT
+                ORDER BY city, target_date, logged_at_utc
+                LIMIT 500
+            """, (days,))
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+        return {"count": len(rows), "logs": rows}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 @app.get("/backtest/real")
