@@ -199,11 +199,13 @@ tr:hover td { background: #12121a; }
 <!-- ACCURACY PAGE -->
 <div class="page active" id="page-accuracy">
   <div class="controls">
-    <button onclick="loadAccuracy()">🔄 Refresh Accuracy</button>
-    <button class="secondary" onclick="loadAccuracy(14)">14 Days</button>
-    <button class="secondary" onclick="loadAccuracy(30)">30 Days</button>
+    <button onclick="loadCityCards(4)">⚡ Load (from cache)</button>
+    <button class="secondary" onclick="loadCityCardsFresh(4)">🔄 Force Refresh</button>
+    <button class="secondary" onclick="loadCityCards(5)">5 Days</button>
+    <button class="secondary" onclick="loadCityCards(6)">6 Days</button>
+    <button class="secondary" onclick="loadAccuracy(30)" style="margin-left:auto">📊 Accuracy</button>
   </div>
-  <div class="status-bar" id="accStatus">Click Refresh to load city accuracy data</div>
+  <div class="status-bar" id="accStatus">Click Refresh to load forecasts and betting ranges</div>
 
   <div class="summary" id="accSummary" style="display:none">
     <div class="stat"><div class="label">Cities Tested</div><div class="value purple" id="accCities">0</div></div>
@@ -668,8 +670,158 @@ function toggleAuto() {
     autoTimer = setInterval(loadSignals, 5*60*1000);
 }
 
-// Load accuracy on start
-renderAccuracy();
+// ── CITY CARDS ──────────────────────────────────────────
+async function loadCityCardsFresh(daysOut = 4) {
+  return loadCityCards(daysOut, true);
+}
+
+async function loadCityCards(daysOut = 4, forceRefresh = false) {
+  const status = document.getElementById('accStatus');
+  const dot    = document.getElementById('liveDot');
+  status.className = 'status-bar loading';
+  status.textContent = `Loading forecasts for ${daysOut} days out — all cities... (60-90 seconds)`;
+
+  try {
+    const res  = await fetch(`/city-cards?days_out=${daysOut}&refresh=${forceRefresh}`);
+    const data = await res.json();
+
+    if (data.status === 'error') {
+      status.className = 'status-bar error';
+      status.textContent = '❌ ' + data.message;
+      return;
+    }
+
+    const cards = data.cards || [];
+    const withMarket = cards.filter(c => c.has_market).length;
+
+    const cacheNote = data.from_cache ? ` (cached ${data.updated_at})` : ' (fresh)';
+    status.className = 'status-bar ok';
+    status.textContent = `✅ ${cards.length} cities — ${withMarket} active markets${cacheNote}`;
+
+    // Update summary
+    const bigCities = cards.filter(c => CITY_ACCURACY[c.city]?.action === 'bet-big' && c.has_market);
+    document.getElementById('accSummary').style.display = 'flex';
+    document.getElementById('accCities').textContent  = withMarket;
+    document.getElementById('accBig').textContent     = bigCities.length;
+    document.getElementById('accOverall').textContent = daysOut + 'd out';
+    document.getElementById('accTotal').textContent   = cards.filter(c => c.forecast).length;
+
+    document.getElementById('accTitle').style.display = 'block';
+    renderCityCards(cards);
+
+  } catch(e) {
+    status.className = 'status-bar error';
+    status.textContent = '❌ Failed: ' + e.message;
+  }
+}
+
+function renderCityCards(cards) {
+  const grid = document.getElementById('cityGrid');
+
+  // Sort: bet-big with markets first, then caution, then testing, then no market
+  const order = { 'bet-big': 0, 'caution': 1, 'testing': 2, 'avoid': 3 };
+  cards.sort((a, b) => {
+    const aa = CITY_ACCURACY[a.city] || {};
+    const ba = CITY_ACCURACY[b.city] || {};
+    const ao = order[aa.action] ?? 2;
+    const bo = order[ba.action] ?? 2;
+    if (ao !== bo) return ao - bo;
+    if (a.has_market !== b.has_market) return b.has_market ? 1 : -1;
+    return (ba.accuracy || 0) - (aa.accuracy || 0);
+  });
+
+  grid.innerHTML = cards.map(card => {
+    const acc      = CITY_ACCURACY[card.city] || {};
+    const isBig    = acc.action === 'bet-big';
+    const isCaut   = acc.action === 'caution';
+    const isTesting = acc.action === 'testing' || !acc.action;
+    const cardClass = isBig ? 'bet-big' : isCaut ? 'caution' : 'avoid';
+    const badgeText = acc.label || '🔄 TESTING';
+    const badgeClass = isBig ? 'bet-big' : isCaut ? 'caution' : isTesting ? 'caution' : 'avoid';
+
+    const fc = card.forecast;
+
+    // No market open yet
+    if (!card.has_market || !fc) {
+      return `<div class="city-card">
+        <div class="city-card-header">
+          <div class="city-name">${card.city}</div>
+          <div class="city-badge ${badgeClass}">${badgeText}</div>
+        </div>
+        ${fc ? `
+        <div style="font-size:12px;color:#888;margin:8px 0">
+          📅 ${card.date_label} forecast: <b style="color:#fff">${fc.consensus}°${fc.unit}</b>
+          <span style="color:#555"> (GFS=${fc.gfs||'?'} UKMO=${fc.ukmo||'?'} MF=${fc.mf||'?'})</span>
+        </div>` : ''}
+        <div style="font-size:12px;color:#555;padding:10px;background:#0a0a0f;border-radius:8px">
+          No market open yet for ${card.date_label}. Check back when market opens.
+        </div>
+        <div class="open-time">🕐 Opens: <span>${acc.open_est || '—'}</span></div>
+      </div>`;
+    }
+
+    // Build ranges display
+    const ranges = card.buy_ranges || [];
+    const rangesHTML = ranges.map(r => {
+      const isFc   = r.is_forecast;
+      const color  = isFc ? '#44ff88' : r.is_safety ? '#ffcc44' : '#666';
+      const bg     = isFc ? '#1a3a1a' : r.is_safety ? '#2a2a1a' : '#1e1e2e';
+      const label  = isFc ? '← BET THIS' : '';
+      return `<div style="display:flex;justify-content:space-between;align-items:center;
+              padding:6px 10px;background:${bg};border-radius:6px;margin:3px 0;font-size:12px">
+        <span style="color:${color};font-weight:${isFc?'700':'400'}">${r.question.replace(/Will the highest temperature in \w+ be /i,'').split(' on ')[0]}</span>
+        <span style="color:#ffcc44">${r.price_c}¢</span>
+        <span style="color:${color};font-size:10px">${label}</span>
+      </div>`;
+    }).join('');
+
+    const accBar = acc.accuracy ? `
+      <div class="accuracy-bar" style="margin:8px 0">
+        <div class="acc-label"><span>Model Accuracy</span><span>${acc.accuracy}%</span></div>
+        <div class="bar-track"><div class="bar-fill ${isBig?'green':'yellow'}" style="width:${acc.accuracy}%"></div></div>
+      </div>` : '';
+
+    return `<div class="city-card ${isBig?'bet-big':isCaut?'caution':''}">
+      <div class="city-card-header">
+        <div class="city-name">${card.city}</div>
+        <div class="city-badge ${badgeClass}">${badgeText}</div>
+      </div>
+
+      <div style="font-size:13px;color:#888;margin-bottom:6px">📅 ${card.date_label}</div>
+
+      <div style="padding:10px;background:#0a0a0f;border-radius:8px;margin-bottom:10px">
+        <div style="font-size:18px;font-weight:700;color:#fff;margin-bottom:4px">
+          ${fc.consensus}°${fc.unit}
+          <span style="font-size:12px;color:#666;font-weight:400;margin-left:8px">forecast</span>
+        </div>
+        <div style="font-size:11px;color:#555">
+          GFS=${fc.gfs||'?'} | UKMO=${fc.ukmo||'?'} | MF=${fc.mf||'?'}
+          ${fc.spread > 0 ? `<span style="color:${fc.spread<=1?'#44ff88':fc.spread<=2?'#ffcc44':'#ff6644'}"> • spread ${fc.spread}°</span>` : ''}
+        </div>
+      </div>
+
+      ${accBar}
+
+      <div style="font-size:11px;color:#666;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Ranges to buy:</div>
+      ${rangesHTML || '<div style="color:#555;font-size:12px">No ranges found on Polymarket</div>'}
+
+      <div class="open-time" style="margin-top:10px">🕐 Market opens: <span>${acc.open_est || '—'}</span></div>
+
+      ${isBig ? `
+      <div style="margin-top:10px;padding:10px;background:#0d1f0d;border:1px solid #1a3a1a;border-radius:8px;font-size:12px">
+        <div style="color:#44ff88;font-weight:700;margin-bottom:4px">✅ What to do:</div>
+        <div style="color:#aaa">Buy the green range + 2 yellow = 5 total</div>
+        <div style="color:#44ff88;font-weight:700">$50 each = $250 total bet</div>
+      </div>` : isCaut ? `
+      <div style="margin-top:10px;padding:8px 10px;background:#1a1a0d;border-radius:8px;font-size:12px;color:#ffcc44">
+        ⚠️ Small bets — $10 per range only
+      </div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+// Load city cards from cache on start (instant)
+loadCityCards(4);
 
 // Auto-load signals on page load
 loadSignals();
