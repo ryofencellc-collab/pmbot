@@ -12,6 +12,23 @@ import uvicorn
 
 from data.database import get_conn, init_db
 
+# Ensure cache table exists on startup
+try:
+    _conn = get_conn()
+    _c = _conn.cursor()
+    _c.execute("""
+        CREATE TABLE IF NOT EXISTS cache (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            updated_at TEXT
+        )
+    """)
+    _conn.commit()
+    _conn.close()
+    print("[STARTUP] Cache table ready")
+except Exception as _e:
+    print(f"[STARTUP] Cache table error: {_e}")
+
 app = FastAPI(title="PolyEdge", version="4.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -833,12 +850,27 @@ def early_signals(refresh: bool = False):
     # No cache yet — trigger build and tell user
     t = threading.Thread(target=rebuild_cache, daemon=True)
     t.start()
+
+    # Also ensure cache table exists
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS cache (
+                key TEXT PRIMARY KEY, value TEXT, updated_at TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
     return {
         "signals":    [],
         "total":      0,
         "from_cache": False,
         "status":     "building",
-        "message":    "No cache yet — building now. Check back in 3 minutes or hit /early-signals?refresh=true"
+        "message":    "Building now — check back in 3 minutes"
     }
 
 
