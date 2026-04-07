@@ -25,10 +25,10 @@ GAMMA            = "https://gamma-api.polymarket.com"
 OPEN_METEO       = "https://api.open-meteo.com/v1/forecast"
 
 BET_SIZE         = 10.0
-MAX_PRICE        = 0.05    # buy cheap — 4-7 days out before market prices it
-MIN_PRICE        = 0.001   # ignore dead markets
+MAX_PRICE        = 0.35    # up to 35¢ — catches markets already mid-priced
+MIN_PRICE        = 0.01    # ignore dead markets
 DAYS_AHEAD       = 7
-DAYS_MIN         = 4       # minimum 4 days out — get in early and cheap
+DAYS_MIN         = 3       # 3+ days out
 FORECAST_WINDOW  = 3       # 3° window — enough for 4-day forecasts, tight enough to win
 CONSENSUS_WINDOW = 3       # max spread between models
 
