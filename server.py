@@ -150,6 +150,25 @@ def run_scheduler():
             except Exception as e:
                 print(f"[SCHEDULER] Forecast log error: {e}")
 
+            # Rebuild signals cache
+            try:
+                import threading, json as _json
+                def _rebuild_signals():
+                    from strategy.early_entry import get_early_signals
+                    from datetime import datetime, timezone as _tz, timedelta as _td
+                    signals = get_early_signals()
+                    est_now = datetime.now(_tz(_td(hours=-5))).strftime("%Y-%m-%d %I:%M %p EST")
+                    conn2 = get_conn()
+                    c2 = conn2.cursor()
+                    c2.execute("""INSERT INTO cache (key, value, updated_at) VALUES ('early_signals', %s, %s)
+                        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at""",
+                        (_json.dumps(signals), est_now))
+                    conn2.commit(); conn2.close()
+                    print(f"[SCHEDULER] Signals cached: {len(signals)} at {est_now}")
+                threading.Thread(target=_rebuild_signals, daemon=True).start()
+            except Exception as e:
+                print(f"[SCHEDULER] Signals cache error: {e}")
+
             # Rebuild city cards cache
             try:
                 from city_cards import get_all_city_cards
@@ -750,18 +769,78 @@ def run_honda_background():
 
 
 @app.get("/early-signals")
-def early_signals():
-    """Get early entry signals — cheap ranges 2-7 days before resolution."""
+def early_signals(refresh: bool = False):
+    """
+    Returns signals from cache instantly.
+    Cache is rebuilt every 6 hours by scheduler.
+    Pass ?refresh=true to trigger a background rebuild.
+    """
+    import json as _json
+    import threading
+
+    def rebuild_cache():
+        try:
+            import sys, os
+            sys.path.insert(0, os.path.dirname(__file__))
+            from strategy.early_entry import get_early_signals
+            signals = get_early_signals()
+            from datetime import datetime, timezone as _tz, timedelta as _td
+            est_now = datetime.now(_tz(_td(hours=-5))).strftime("%Y-%m-%d %I:%M %p EST")
+            conn = get_conn()
+            c = conn.cursor()
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS cache (
+                    key TEXT PRIMARY KEY, value TEXT, updated_at TEXT
+                )
+            """)
+            c.execute("""
+                INSERT INTO cache (key, value, updated_at)
+                VALUES ('early_signals', %s, %s)
+                ON CONFLICT (key) DO UPDATE
+                SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
+            """, (_json.dumps(signals), est_now))
+            conn.commit()
+            conn.close()
+            print(f"[SIGNALS] Cache rebuilt at {est_now} — {len(signals)} signals")
+        except Exception as e:
+            print(f"[SIGNALS] Cache rebuild error: {e}")
+
+    # Trigger background rebuild if requested
+    if refresh:
+        t = threading.Thread(target=rebuild_cache, daemon=True)
+        t.start()
+        return {"status": "rebuilding", "message": "Signals rebuilding in background — check back in 3 minutes"}
+
+    # Serve from cache
     try:
-        from strategy.early_entry import get_early_signals
-        signals, log = get_early_signals()
-        return {"signals": signals, "count": len(signals), "log": log, "date": str(__import__("datetime").date.today())}
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT value, updated_at FROM cache WHERE key='early_signals'")
+        row = c.fetchone()
+        conn.close()
+        if row:
+            signals = _json.loads(row["value"])
+            return {
+                "signals":      signals,
+                "total":        len(signals),
+                "from_cache":   True,
+                "updated_at":   row["updated_at"],
+                "high_conf":    [s for s in signals if s.get("confidence", 0) >= 80],
+            }
     except Exception as e:
-        import traceback
-        return {"error": str(e), "trace": traceback.format_exc()}
+        print(f"[SIGNALS] Cache read error: {e}")
 
+    # No cache yet — trigger build and tell user
+    t = threading.Thread(target=rebuild_cache, daemon=True)
+    t.start()
+    return {
+        "signals":    [],
+        "total":      0,
+        "from_cache": False,
+        "status":     "building",
+        "message":    "No cache yet — building now. Check back in 3 minutes or hit /early-signals?refresh=true"
+    }
 
-# ── Signal Tracking ───────────────────────────────────────────────────────
 
 @app.api_route("/signals/save", methods=["GET", "POST"])
 def save_signal(market_id: str, city: str, question: str, 
