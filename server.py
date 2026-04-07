@@ -801,7 +801,8 @@ def early_signals(refresh: bool = False):
             import sys, os
             sys.path.insert(0, os.path.dirname(__file__))
             from strategy.early_entry import get_early_signals
-            signals = get_early_signals()
+            result = get_early_signals()
+            signals = result[0] if isinstance(result, tuple) else result
             from datetime import datetime, timezone as _tz, timedelta as _td
             est_now = datetime.now(_tz(_td(hours=-5))).strftime("%Y-%m-%d %I:%M %p EST")
             conn = get_conn()
