@@ -173,7 +173,8 @@ def run_scheduler():
                 def _rebuild_signals():
                     from strategy.early_entry import get_early_signals
                     from datetime import datetime, timezone as _tz, timedelta as _td
-                    signals = get_early_signals()
+                    result = get_early_signals()
+                    signals = result[0] if isinstance(result, tuple) else result
                     est_now = datetime.now(_tz(_td(hours=-5))).strftime("%Y-%m-%d %I:%M %p EST")
                     conn2 = get_conn()
                     c2 = conn2.cursor()
