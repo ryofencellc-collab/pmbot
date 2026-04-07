@@ -139,9 +139,13 @@ def run_scheduler():
         # Every 6 hours: log all 3 model forecasts + rebuild city cards cache
         if minute < 5 and hour in [0, 6, 12, 18]:
             try:
-                from forecast_logger import log_all_forecasts, fill_wu_actuals
+                from forecast_logger import log_all_forecasts
                 log_all_forecasts()
-                fill_wu_actuals()
+                try:
+                    from forecast_logger import fill_wu_actuals
+                    fill_wu_actuals()
+                except Exception:
+                    pass
                 print(f"[SCHEDULER] Forecasts logged at {hour}:00 UTC")
             except Exception as e:
                 print(f"[SCHEDULER] Forecast log error: {e}")
@@ -161,7 +165,7 @@ def run_scheduler():
                     )
                 """)
                 from datetime import datetime, timezone as _tz, timedelta as _td
-                est_now = datetime.now(_tz(td(hours=-5))).strftime("%Y-%m-%d %I:%M %p EST")
+                est_now = datetime.now(_tz(_td(hours=-5))).strftime("%Y-%m-%d %I:%M %p EST")
                 c.execute("""
                     INSERT INTO cache (key, value, updated_at)
                     VALUES ('city_cards', %s, %s)
