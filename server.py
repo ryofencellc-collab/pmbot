@@ -2442,6 +2442,56 @@ def weekly_summary():
         return {"status": "error", "message": str(e)}
 
 
+@app.get("/db-migrate")
+def db_migrate():
+    """Add missing columns to paper_trades table."""
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        migrations = [
+            "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS placed_at TEXT",
+            "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS target_date TEXT",
+            "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS days_out INT",
+            "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS entry_price_c REAL",
+            "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS forecast_temp REAL",
+            "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS gfs_temp REAL",
+            "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS ukmo_temp REAL",
+            "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS mf_temp REAL",
+            "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS spread REAL",
+            "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS confidence REAL",
+            "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS unit TEXT",
+            "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS bet_size REAL DEFAULT 10.0",
+            "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS resolved_at TEXT",
+            "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS wu_actual REAL",
+            "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS scanned_at TEXT",
+            "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS days_out INT",
+            "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS gfs_temp REAL",
+            "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS ukmo_temp REAL",
+            "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS mf_temp REAL",
+            "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS consensus REAL",
+            "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS spread REAL",
+            "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS unit TEXT",
+            "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS decision TEXT",
+            "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS reason TEXT",
+            "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS market_id TEXT",
+            "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS question TEXT",
+            "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS price_c REAL",
+            "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS trade_id INT",
+        ]
+        results = []
+        for sql in migrations:
+            try:
+                c.execute(sql)
+                results.append(f"✅ {sql.split('ADD COLUMN IF NOT EXISTS')[1].strip().split()[0]}")
+            except Exception as e:
+                results.append(f"⚠️ {e}")
+        conn.commit()
+        conn.close()
+        return {"status": "done", "migrations": results}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 @app.get("/system-test")
 def system_test():
     """
