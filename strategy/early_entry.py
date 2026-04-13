@@ -28,7 +28,7 @@ BET_SIZE         = 10.0
 MAX_PRICE        = 0.35    # up to 35¢ — catches markets already mid-priced
 MIN_PRICE        = 0.01    # ignore dead markets
 DAYS_AHEAD       = 7
-DAYS_MIN         = 3       # 3+ days out
+DAYS_MIN         = 2       # 2+ days out — catches markets opening same week
 FORECAST_WINDOW  = 3       # 3° window — enough for 4-day forecasts, tight enough to win
 CONSENSUS_WINDOW = 3       # max spread between models
 
