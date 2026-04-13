@@ -2478,7 +2478,8 @@ def system_test():
     # 2. GFS forecast
     def test_gfs():
         import requests as _r
-        target = (date.today() + timedelta(days=4)).strftime("%Y-%m-%d")
+        from datetime import date as _date, timedelta as _td4
+        target = (_date.today() + _td4(days=4)).strftime("%Y-%m-%d")
         r = _r.get("https://api.open-meteo.com/v1/forecast", params={
             "latitude": 47.6062, "longitude": -122.3321,
             "daily": "temperature_2m_max", "temperature_unit": "fahrenheit",
@@ -2492,7 +2493,8 @@ def system_test():
     # 3. UKMO forecast
     def test_ukmo():
         import requests as _r
-        target = (date.today() + timedelta(days=4)).strftime("%Y-%m-%d")
+        from datetime import date as _date, timedelta as _td4
+        target = (_date.today() + _td4(days=4)).strftime("%Y-%m-%d")
         r = _r.get("https://api.open-meteo.com/v1/forecast", params={
             "latitude": 47.6062, "longitude": -122.3321,
             "daily": "temperature_2m_max", "temperature_unit": "fahrenheit",
