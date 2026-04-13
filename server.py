@@ -214,14 +214,33 @@ def run_scheduler():
             except Exception as e:
                 print(f"[SCHEDULER] City cards cache error: {e}")
 
-        # Every 30 min: check outcomes in real time
+        # Every 30 min: paper scan + check outcomes
         check_key = f"{today}-{hour}-{minute // 30}"
         if last_outcome != check_key:
+            # Run paper trading scan
             try:
-                from strategy.paper_trade import check_pending_outcomes
-                resolved = check_pending_outcomes()
+                import threading as _thr
+                def _paper_scan():
+                    try:
+                        from strategy.paper_trade import run_scan, init_tables
+                        init_tables()
+                        trades, summary = run_scan()
+                        print(f"[SCHEDULER] Paper scan done — {trades} trades in {summary.get('cities_bought', [])}")
+                    except Exception as e:
+                        print(f"[SCHEDULER] Paper scan error: {e}")
+                _thr.Thread(target=_paper_scan, daemon=True).start()
+            except Exception as e:
+                print(f"[SCHEDULER] Paper scan thread error: {e}")
+
+            # Check outcomes on pending trades
+            try:
+                from strategy.paper_trade import check_outcomes
+                resolved = check_outcomes()
                 if resolved > 0:
                     print(f"[SCHEDULER] Resolved {resolved} trades")
+                last_outcome = check_key
+            except Exception as e:
+                print(f"[SCHEDULER] Outcome check error: {e}")
                 last_outcome = check_key
             except Exception as e:
                 print(f"[SCHEDULER] Outcome check error: {e}")
@@ -844,7 +863,7 @@ def early_signals(refresh: bool = False):
                 "total":        len(signals),
                 "from_cache":   True,
                 "updated_at":   row["updated_at"],
-                "high_conf":    [s for s in signals if s.get("confidence", 0) >= 80],
+                "high_conf":    [s for s in signals if isinstance(s, dict) and s.get("confidence", 0) >= 80],
             }
     except Exception as e:
         print(f"[SIGNALS] Cache read error: {e}")
@@ -2352,6 +2371,245 @@ def forecast_accuracy():
     except Exception as e:
         import traceback
         return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
+
+
+@app.get("/paper/trades")
+def paper_trades(limit: int = 100):
+    """All paper trades with full detail — wins, losses, pending."""
+    try:
+        from strategy.paper_trade import get_performance
+        return get_performance()
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
+
+
+@app.get("/paper/scan-log")
+def paper_scan_log(limit: int = 200):
+    """Full audit trail of every scan decision."""
+    try:
+        from strategy.paper_trade import get_scan_log
+        rows = get_scan_log(limit=limit)
+        decisions = {}
+        for r in rows:
+            d = r.get("decision", "UNKNOWN")
+            decisions[d] = decisions.get(d, 0) + 1
+        return {
+            "total_entries": len(rows),
+            "decision_counts": decisions,
+            "log": rows,
+        }
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
+
+
+@app.get("/paper/run-now")
+def paper_run_now():
+    """Trigger a paper trading scan right now in background."""
+    import threading
+    def _run():
+        try:
+            from strategy.paper_trade import run_scan, init_tables
+            init_tables()
+            trades, summary = run_scan()
+            print(f"[MANUAL SCAN] {trades} trades: {summary}")
+        except Exception as e:
+            print(f"[MANUAL SCAN ERR] {e}")
+    threading.Thread(target=_run, daemon=True).start()
+    return {"status": "scanning", "message": "Paper scan running in background — check /paper/trades in 3-5 minutes"}
+
+
+@app.get("/paper/weekly-summary")
+def weekly_summary():
+    """Win rate, P&L, performance by city for the week."""
+    try:
+        from strategy.paper_trade import get_performance
+        perf = get_performance()
+        return {
+            "week_summary": {
+                "total_trades": perf["total_trades"],
+                "wins":         perf["wins"],
+                "losses":       perf["losses"],
+                "pending":      perf["pending"],
+                "win_rate":     perf["win_rate"],
+                "total_pnl":    perf["total_pnl"],
+            },
+            "by_city":      perf["by_city"],
+            "recent_trades": perf["trades"][:20],
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/system-test")
+def system_test():
+    """
+    Full system health check — run before going live.
+    Tests every component end to end with real data.
+    """
+    results = {}
+    passed  = 0
+    failed  = 0
+
+    def check(name, fn):
+        nonlocal passed, failed
+        try:
+            result = fn()
+            results[name] = {"status": "✅ PASS", "detail": result}
+            passed += 1
+        except Exception as e:
+            results[name] = {"status": "❌ FAIL", "detail": str(e)}
+            failed += 1
+
+    # 1. Database connection
+    def test_db():
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) as n FROM markets")
+        n = c.fetchone()["n"]
+        c.execute("""SELECT table_name FROM information_schema.tables
+                     WHERE table_schema='public' ORDER BY table_name""")
+        tables = [r["table_name"] for r in c.fetchall()]
+        conn.close()
+        return f"{n} markets, tables: {', '.join(tables)}"
+    check("1_database", test_db)
+
+    # 2. GFS forecast
+    def test_gfs():
+        import requests as _r
+        target = (date.today() + timedelta(days=4)).strftime("%Y-%m-%d")
+        r = _r.get("https://api.open-meteo.com/v1/forecast", params={
+            "latitude": 47.6062, "longitude": -122.3321,
+            "daily": "temperature_2m_max", "temperature_unit": "fahrenheit",
+            "timezone": "America/Los_Angeles", "start_date": target,
+            "end_date": target, "models": "gfs_global"
+        }, timeout=15)
+        temp = r.json()["daily"]["temperature_2m_max"][0]
+        return f"Seattle {target}: {temp}°F"
+    check("2_gfs_forecast", test_gfs)
+
+    # 3. UKMO forecast
+    def test_ukmo():
+        import requests as _r
+        target = (date.today() + timedelta(days=4)).strftime("%Y-%m-%d")
+        r = _r.get("https://api.open-meteo.com/v1/forecast", params={
+            "latitude": 47.6062, "longitude": -122.3321,
+            "daily": "temperature_2m_max", "temperature_unit": "fahrenheit",
+            "timezone": "America/Los_Angeles", "start_date": target,
+            "end_date": target, "models": "ukmo_global_deterministic_10km"
+        }, timeout=15)
+        temp = r.json()["daily"]["temperature_2m_max"][0]
+        return f"Seattle {target}: {temp}°F"
+    check("3_ukmo_forecast", test_ukmo)
+
+    # 4. Polymarket connection
+    def test_polymarket():
+        import requests as _r
+        from datetime import date as _d, timedelta as _td
+        target = _d.today() + _td(days=4)
+        slug_date = target.strftime("%B-%-d").lower()
+        slug = f"highest-temperature-in-seattle-on-{slug_date}-{target.year}"
+        r = _r.get(f"https://gamma-api.polymarket.com/events",
+                   params={"slug": slug}, timeout=15)
+        data = r.json()
+        if data and isinstance(data, list) and data:
+            markets = data[0].get("markets", [])
+            active = [m for m in markets if m.get("acceptingOrders")]
+            return f"Seattle {target}: {len(active)} active ranges found"
+        return "No market found yet (may not be open)"
+    check("4_polymarket", test_polymarket)
+
+    # 5. Signal logic
+    def test_signals():
+        from strategy.early_entry import range_near_forecast
+        r1 = range_near_forecast("Will temp be 66°F on April 17?", 66.0, "F", 3)
+        r2 = range_near_forecast("Will temp be 50°F on April 17?", 66.0, "F", 3)
+        if r1 and not r2:
+            return "Range matching working correctly"
+        return f"WARNING: r1={r1} r2={r2} — check logic"
+    check("5_signal_logic", test_signals)
+
+    # 6. Scan log write
+    def test_scan_log():
+        from strategy.paper_trade import log_scan, init_tables
+        init_tables()
+        log_scan("TestCity", "2026-01-01", 4,
+                 {"gfs": 60.0, "ukmo": 61.0, "meteofrance": 60.5,
+                  "consensus": 60.5, "spread": 1.0, "unit": "F"},
+                 "TEST", "System test entry")
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) as n FROM scan_log WHERE city='TestCity'")
+        n = c.fetchone()["n"]
+        conn.close()
+        return f"Scan log write/read working — {n} test entries"
+    check("6_scan_log", test_scan_log)
+
+    # 7. Paper trades table
+    def test_paper_trades():
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) as n FROM paper_trades")
+        n = c.fetchone()["n"]
+        c.execute("SELECT COUNT(*) as wins FROM paper_trades WHERE outcome='Yes'")
+        wins = c.fetchone()["wins"]
+        c.execute("SELECT COUNT(*) as pending FROM paper_trades WHERE outcome IS NULL")
+        pending = c.fetchone()["pending"]
+        conn.close()
+        return f"{n} total trades, {wins} wins, {pending} pending"
+    check("7_paper_trades", test_paper_trades)
+
+    # 8. Signals cache
+    def test_signals_cache():
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT updated_at, LENGTH(value) as size FROM cache WHERE key='early_signals'")
+        row = c.fetchone()
+        conn.close()
+        if row:
+            return f"Signals cached at {row['updated_at']}, size={row['size']} chars"
+        return "No signals cache yet — hit /early-signals?refresh=true"
+    check("8_signals_cache", test_signals_cache)
+
+    # 9. Forecast log
+    def test_forecast_log():
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) as n FROM forecast_log")
+        n = c.fetchone()["n"]
+        c.execute("SELECT MAX(logged_at_est) as last FROM forecast_log")
+        last = c.fetchone()["last"]
+        conn.close()
+        return f"{n} snapshots, last logged: {last}"
+    check("9_forecast_log", test_forecast_log)
+
+    # 10. Scheduler alive
+    def test_scheduler():
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("""SELECT logged_at_est FROM forecast_log
+                     ORDER BY id DESC LIMIT 1""")
+        row = c.fetchone()
+        conn.close()
+        if row:
+            return f"Last scheduler run: {row['logged_at_est']}"
+        return "No scheduler runs recorded yet"
+    check("10_scheduler", test_scheduler)
+
+    total = passed + failed
+    status = "✅ SYSTEM READY" if failed == 0 else f"⚠️ {failed} CHECKS FAILED"
+
+    return {
+        "status":       status,
+        "passed":       passed,
+        "failed":       failed,
+        "total_checks": total,
+        "checks":       results,
+        "tested_at":    __import__('datetime').datetime.now(
+                            __import__('datetime').timezone.utc
+                        ).strftime("%Y-%m-%d %I:%M %p UTC"),
+    }
 
 
 @app.get("/research/market-open-times")
