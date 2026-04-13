@@ -194,6 +194,8 @@ tr:hover td { background: #12121a; }
   <div class="nav-tab" onclick="showPage('signals',this)">📡 Live Signals</div>
   <div class="nav-tab" onclick="showPage('tracking',this)">📊 Signal Tracker</div>
   <div class="nav-tab" onclick="showPage('backtest',this)">🔬 Backtest</div>
+  <div class="nav-tab" onclick="showPage('paper',this)">💰 Paper Trades</div>
+  <div class="nav-tab" onclick="showPage('scanlog',this)">📋 Scan Log</div>
 </div>
 
 <!-- ACCURACY PAGE -->
@@ -259,6 +261,44 @@ tr:hover td { background: #12121a; }
       <thead><tr><th>Date</th><th>City</th><th>Question</th><th>Price</th><th>Forecast</th><th>Days</th><th>Outcome</th><th>P&L</th></tr></thead>
       <tbody id="trackBody"><tr><td colspan="8" style="text-align:center;color:#444;padding:40px">No tracked signals yet</td></tr></tbody>
     </table>
+  </div>
+</div>
+
+<!-- PAPER TRADES PAGE -->
+<div class="page" id="page-paper">
+  <div class="controls">
+    <button onclick="loadPaperTrades()">🔄 Refresh</button>
+    <button class="secondary" onclick="fetch('/paper/run-now').then(()=>alert('Scan started — check back in 5 min'))">▶ Run Scan Now</button>
+    <button class="secondary" onclick="window.open('/system-test','_blank')">🧪 System Test</button>
+  </div>
+  <div class="summary">
+    <div class="stat"><div class="label">Total Trades</div><div class="value purple" id="ptTotal">0</div></div>
+    <div class="stat"><div class="label">Wins</div><div class="value green" id="ptWins">0</div></div>
+    <div class="stat"><div class="label">Win Rate</div><div class="value yellow" id="ptRate">—</div></div>
+    <div class="stat"><div class="label">Total P&L</div><div class="value green" id="ptPnl">$0</div></div>
+    <div class="stat"><div class="label">Pending</div><div class="value blue" id="ptPending">0</div></div>
+  </div>
+  <div class="section-title">🏙️ Performance by City</div>
+  <div class="track-table">
+    <table><thead><tr><th>City</th><th>Bets</th><th>Wins</th><th>P&L</th></tr></thead>
+    <tbody id="ptCities"></tbody></table>
+  </div>
+  <div class="section-title">📋 All Trades</div>
+  <div class="track-table">
+    <table><thead><tr><th>Placed</th><th>City</th><th>Question</th><th>Price</th><th>Forecast</th><th>Models</th><th>Spread</th><th>Result</th><th>P&L</th></tr></thead>
+    <tbody id="ptTrades"></tbody></table>
+  </div>
+</div>
+
+<!-- SCAN LOG PAGE -->
+<div class="page" id="page-scanlog">
+  <div class="controls">
+    <button onclick="loadScanLog()">🔄 Load Scan Log</button>
+  </div>
+  <div class="status-bar" id="scanLogStatus">Click Load to see full audit trail</div>
+  <div class="track-table">
+    <table><thead><tr><th>Time</th><th>City</th><th>Date</th><th>Days</th><th>GFS|UKMO|MF</th><th>Consensus</th><th>Decision</th><th>Reason</th><th>Price</th></tr></thead>
+    <tbody id="scanLogBody"></tbody></table>
   </div>
 </div>
 
@@ -825,6 +865,79 @@ loadCityCards(4);
 
 // Auto-load signals on page load
 loadSignals();
+
+// ── PAPER TRADES ─────────────────────────────────────────
+async function loadPaperTrades() {
+  const res  = await fetch('/paper/weekly-summary');
+  const data = await res.json();
+
+  const ws = data.week_summary || {};
+  document.getElementById('ptTotal').textContent  = ws.total_trades || 0;
+  document.getElementById('ptWins').textContent   = ws.wins || 0;
+  document.getElementById('ptRate').textContent   = (ws.win_rate || 0) + '%';
+  const pnl = ws.total_pnl || 0;
+  const pel  = document.getElementById('ptPnl');
+  pel.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
+  pel.className   = 'value ' + (pnl >= 0 ? 'green' : 'red');
+  document.getElementById('ptPending').textContent = ws.pending || 0;
+
+  // By city
+  const cities = data.by_city || [];
+  document.getElementById('ptCities').innerHTML = cities.map(c => `
+    <tr>
+      <td style="font-weight:600">${c.city}</td>
+      <td>${c.bets}</td>
+      <td style="color:#44ff88">${c.wins}</td>
+      <td style="color:${c.pnl>=0?'#44ff88':'#ff4444'}">${c.pnl>=0?'+$':'-$'}${Math.abs(c.pnl).toFixed(2)}</td>
+    </tr>`).join('');
+
+  // Recent trades
+  const trades = data.recent_trades || [];
+  document.getElementById('ptTrades').innerHTML = trades.map(t => {
+    const outcome = t.outcome;
+    const pill = outcome==='Yes'?'<span class="pill yes">WIN ✓</span>':
+                 outcome==='No'?'<span class="pill no">LOSS ✗</span>':
+                 '<span class="pill pending">Pending</span>';
+    const pnl  = t.pnl!=null?(t.pnl>0?`<span style="color:#44ff88">+$${t.pnl.toFixed(2)}</span>`:`<span style="color:#ff4444">-$${Math.abs(t.pnl).toFixed(2)}</span>`):'—';
+    return `<tr>
+      <td style="color:#666;font-size:11px">${t.placed_at||''}</td>
+      <td style="font-weight:600">${t.city}</td>
+      <td style="color:#aaa;max-width:180px;font-size:11px">${(t.question||'').substring(0,60)}</td>
+      <td style="color:#ffcc44">${t.entry_price_c||0}¢</td>
+      <td style="color:#44aaff">${t.forecast_temp||'—'}°</td>
+      <td style="color:#888">${t.gfs_temp||'?'} | ${t.ukmo_temp||'?'} | ${t.mf_temp||'?'}</td>
+      <td style="color:#555">${t.spread||'?'}°</td>
+      <td>${pill}</td>
+      <td>${pnl}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadScanLog() {
+  const status = document.getElementById('scanLogStatus');
+  status.textContent = 'Loading scan log...';
+  const res  = await fetch('/paper/scan-log?limit=500');
+  const data = await res.json();
+  status.textContent = `${data.total_entries} entries — ${JSON.stringify(data.decision_counts)}`;
+
+  const rows = data.log || [];
+  document.getElementById('scanLogBody').innerHTML = rows.map(r => {
+    const color = r.decision==='BUY'?'#44ff88':
+                  r.decision.startsWith('SKIP_SPREAD')?'#ff6644':
+                  r.decision.startsWith('SKIP')?'#666':'#44aaff';
+    return `<tr>
+      <td style="color:#555;font-size:11px;white-space:nowrap">${r.scanned_at||''}</td>
+      <td style="font-weight:600">${r.city}</td>
+      <td style="color:#888">${r.target_date}</td>
+      <td>${r.days_out}d</td>
+      <td style="color:#aaa;font-size:11px">${r.gfs_temp||'?'} | ${r.ukmo_temp||'?'} | ${r.mf_temp||'?'}</td>
+      <td style="color:#888">${r.consensus||'?'}° ±${r.spread||'?'}°</td>
+      <td style="color:${color};font-weight:700">${r.decision}</td>
+      <td style="color:#666;font-size:11px;max-width:200px">${r.reason||''}</td>
+      <td style="color:#ffcc44;font-size:11px">${r.price_c?r.price_c+'¢':''}</td>
+    </tr>`;
+  }).join('');
+}
 </script>
 </body>
 </html>
