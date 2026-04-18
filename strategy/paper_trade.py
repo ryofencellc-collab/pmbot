@@ -435,7 +435,7 @@ def get_performance():
 
     c.execute("""
         SELECT * FROM paper_trades
-        ORDER BY placed_at DESC LIMIT 100
+        ORDER BY id DESC LIMIT 100
     """)
     trades = [dict(r) for r in c.fetchall()]
     conn.close()
