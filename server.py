@@ -2463,6 +2463,7 @@ def db_migrate():
             "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS bet_size REAL DEFAULT 10.0",
             "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS resolved_at TEXT",
             "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS wu_actual REAL",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trades_market_date ON paper_trades(market_id, trade_date)",
             "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS scanned_at TEXT",
             "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS days_out INT",
             "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS gfs_temp REAL",
