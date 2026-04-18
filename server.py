@@ -2463,7 +2463,7 @@ def db_migrate():
             "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS bet_size REAL DEFAULT 10.0",
             "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS resolved_at TEXT",
             "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS wu_actual REAL",
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trades_market_date ON paper_trades(market_id, trade_date)",
+
             "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS scanned_at TEXT",
             "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS days_out INT",
             "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS gfs_temp REAL",
@@ -2486,6 +2486,13 @@ def db_migrate():
                 results.append(f"✅ {sql.split('ADD COLUMN IF NOT EXISTS')[1].strip().split()[0]}")
             except Exception as e:
                 results.append(f"⚠️ {e}")
+        # Add unique index separately (not in the loop)
+        try:
+            c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trades_market_date ON paper_trades(market_id, trade_date)")
+            results.append("✅ unique index on paper_trades(market_id, trade_date)")
+        except Exception as e:
+            results.append(f"⚠️ index: {e}")
+
         conn.commit()
         conn.close()
         return {"status": "done", "migrations": results}
