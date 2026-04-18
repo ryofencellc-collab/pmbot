@@ -187,9 +187,14 @@ def run_scan():
     Logs every decision in detail.
     Returns (trades_placed, scan_summary)
     """
-    from strategy.early_entry import ALL_CITIES, get_multi_model_forecast, range_near_forecast
-    from strategy.early_entry import MAX_PRICE, MIN_PRICE, DAYS_MIN, DAYS_AHEAD
-    from strategy.early_entry import FORECAST_WINDOW, CONSENSUS_WINDOW
+    try:
+        from strategy.early_entry import ALL_CITIES, get_multi_model_forecast, range_near_forecast
+        from strategy.early_entry import MAX_PRICE, MIN_PRICE, DAYS_MIN, DAYS_AHEAD
+        from strategy.early_entry import FORECAST_WINDOW, CONSENSUS_WINDOW
+    except ImportError:
+        from early_entry import ALL_CITIES, get_multi_model_forecast, range_near_forecast
+        from early_entry import MAX_PRICE, MIN_PRICE, DAYS_MIN, DAYS_AHEAD
+        from early_entry import FORECAST_WINDOW, CONSENSUS_WINDOW
 
     today         = date.today()
     trades_placed = 0
