@@ -2463,6 +2463,12 @@ def db_migrate():
             "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS bet_size REAL DEFAULT 10.0",
             "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS resolved_at TEXT",
             "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS wu_actual REAL",
+            "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS true_prob REAL",
+            "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS market_prob REAL",
+            "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS edge REAL",
+            "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS bias_used REAL",
+            "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS std_used REAL",
+            "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS trusted_city BOOLEAN",
 
             "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS scanned_at TEXT",
             "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS days_out INT",
