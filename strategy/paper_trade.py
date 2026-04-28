@@ -84,7 +84,7 @@ MIN_PRICE_C = 1.0   # ignore < 1¢
 MAX_PRICE_C = 35.0  # ignore > 35¢
 
 # Days out window
-DAYS_MIN   = 2
+DAYS_MIN   = 1
 DAYS_AHEAD = 7
 
 # Model spread limit — skip if models disagree too much
@@ -135,25 +135,35 @@ def parse_range_from_question(question, unit):
     """
     Extract temperature range [low, high] from Polymarket question.
     Returns (low, high) or (None, None) if can't parse.
+
+    Fix: strip date portion (" on April 29") before parsing numbers
+    to avoid reading the day number as a temperature.
     """
-    q = question.lower()
+    orig = question.lower()
+
+    # Strip date — everything after last " on "
+    q = orig
+    if " on " in q:
+        q = q[:q.rfind(" on ")]
+
+    # Extract numbers from temp portion only
     nums = []
     for n in re.findall(r'-?\d+\.?\d*', q):
         v = float(n)
         if unit == "F" and -30 < v < 150:
             nums.append(v)
-        elif unit == "C" and -30 < v < 60:
+        elif unit == "C" and -30 < v < 55:
             nums.append(v)
 
     if not nums:
         return None, None
 
-    if "or below" in q or "or lower" in q:
-        return -999, nums[0]
-    if "or higher" in q or "or above" in q:
+    if "or below" in orig or "or lower" in orig:
+        return -999, nums[-1]
+    if "or higher" in orig or "or above" in orig:
         return nums[0], 999
-    if "between" in q and len(nums) >= 2:
-        return nums[0], nums[1]
+    if len(nums) >= 2:
+        return min(nums), max(nums)
     if len(nums) == 1:
         return nums[0], nums[0] + 1
     return None, None
