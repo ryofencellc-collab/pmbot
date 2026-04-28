@@ -367,14 +367,16 @@ def test_parse_range():
     """Verify we correctly extract lo/hi from question strings."""
     import re
     def parse(question, unit):
-        q = question.lower()
-        nums = [float(x) for x in re.findall(r'-?\d+\.?\d*', q)
-                if (unit=="F" and -30 < float(x) < 200) or
-                   (unit=="C" and -30 < float(x) < 60)]
+        orig = question.lower()
+        q = orig[:orig.rfind(" on ")] if " on " in orig else orig
+        if unit == "F":
+            nums = [float(x) for x in re.findall(r"-?\d+\.?\d*", q) if -30 < float(x) < 150]
+        else:
+            nums = [float(x) for x in re.findall(r"-?\d+\.?\d*", q) if -30 < float(x) < 55]
         if not nums: return None, None
-        if "or below" in q or "or lower" in q: return -999, nums[0]
-        if "or higher" in q or "or above" in q: return nums[0], 999
-        if "between" in q and len(nums) >= 2: return nums[0], nums[1]
+        if "or below" in orig or "or lower" in orig: return -999, nums[-1]
+        if "or higher" in orig or "or above" in orig: return nums[0], 999
+        if len(nums) >= 2: return min(nums), max(nums)
         if len(nums) == 1: return nums[0], nums[0]+1
         return None, None
 
@@ -552,7 +554,8 @@ def test_full_pipeline():
     errors = []
 
     # Step 1: Get forecast
-    target = (date.today() + timedelta(days=2)).strftime("%Y-%m-%d")
+    # Use days=1 (tomorrow) — V2.5 proved markets only open 0-1 days out
+    target = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
     r = requests.get(OPEN_METEO, params={
         "latitude": 33.749, "longitude": -84.388,
         "daily": "temperature_2m_max",
@@ -571,7 +574,7 @@ def test_full_pipeline():
         return False, " | ".join(errors), "GFS null — try different date"
 
     # Step 2: Find market
-    tdate = date.today() + timedelta(days=2)
+    tdate = date.today() + timedelta(days=1)
     slug_date = tdate.strftime("%B-%-d").lower()
     slug = f"highest-temperature-in-atlanta-on-{slug_date}-{tdate.year}"
     r2 = requests.get(f"{GAMMA}/events", params={"slug": slug}, timeout=15)
