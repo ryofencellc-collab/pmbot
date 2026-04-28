@@ -2442,6 +2442,19 @@ def weekly_summary():
         return {"status": "error", "message": str(e)}
 
 
+@app.get("/run-tests")
+def run_tests():
+    """Run full variable test suite. Returns pass/fail for every assumption."""
+    try:
+        import sys, os
+        sys.path.insert(0, "/app")
+        from test_suite import run_all_tests
+        return run_all_tests()
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "trace": traceback.format_exc()}
+
+
 @app.get("/test-openmeteo")
 def test_openmeteo():
     """Test Open-Meteo API directly and show raw response."""
