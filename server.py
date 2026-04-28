@@ -2442,6 +2442,39 @@ def weekly_summary():
         return {"status": "error", "message": str(e)}
 
 
+@app.get("/test-openmeteo")
+def test_openmeteo():
+    """Test Open-Meteo API directly and show raw response."""
+    import requests as _req
+    from datetime import date as _d, timedelta as _td
+    target = (_d.today() + _td(days=4)).strftime("%Y-%m-%d")
+    results = {}
+    models = {
+        "gfs":  "gfs_global",
+        "ukmo": "ukmo_global_deterministic_10km",
+        "mf":   "meteofrance_arpege_world",
+    }
+    for name, code in models.items():
+        try:
+            r = _req.get("https://api.open-meteo.com/v1/forecast", params={
+                "latitude": 33.749, "longitude": -84.388,
+                "daily": "temperature_2m_max",
+                "temperature_unit": "fahrenheit",
+                "timezone": "America/New_York",
+                "start_date": target, "end_date": target,
+                "models": code,
+            }, timeout=15)
+            data = r.json()
+            if "daily" in data:
+                temps = data["daily"].get("temperature_2m_max", [])
+                results[name] = {"status": "OK", "temp": temps[0] if temps else None}
+            else:
+                results[name] = {"status": "ERROR", "response": str(data)[:200]}
+        except Exception as e:
+            results[name] = {"status": "EXCEPTION", "error": str(e)}
+    return {"target_date": target, "models": results}
+
+
 @app.get("/db-migrate")
 def db_migrate():
     """Add missing columns to paper_trades table."""
@@ -2550,7 +2583,10 @@ def system_test():
             "timezone": "America/Los_Angeles", "start_date": target,
             "end_date": target, "models": "gfs_global"
         }, timeout=15)
-        temp = r.json()["daily"]["temperature_2m_max"][0]
+        data = r.json()
+        if "daily" not in data:
+            raise Exception(f"API error: {data.get('reason', data)}")
+        temp = data["daily"]["temperature_2m_max"][0]
         return f"Seattle {target}: {temp}°F"
     check("2_gfs_forecast", test_gfs)
 
@@ -2565,7 +2601,10 @@ def system_test():
             "timezone": "America/Los_Angeles", "start_date": target,
             "end_date": target, "models": "ukmo_global_deterministic_10km"
         }, timeout=15)
-        temp = r.json()["daily"]["temperature_2m_max"][0]
+        data = r.json()
+        if "daily" not in data:
+            raise Exception(f"API error: {data.get('reason', data)}")
+        temp = data["daily"]["temperature_2m_max"][0]
         return f"Seattle {target}: {temp}°F"
     check("3_ukmo_forecast", test_ukmo)
 
