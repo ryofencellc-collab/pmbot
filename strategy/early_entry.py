@@ -110,14 +110,24 @@ def get_multi_model_forecast(city_config, date_str):
                 "models":           model_code,
             }, timeout=15)
 
-            if r.status_code == 200:
-                temps = r.json().get("daily", {}).get("temperature_2m_max", [])
+            data = r.json()
+            if r.status_code == 200 and "daily" in data:
+                temps = data["daily"].get("temperature_2m_max", [])
                 if temps and temps[0] is not None:
                     results[model_name] = round(float(temps[0]), 1)
+                else:
+                    print(f"  [MODEL {model_name}] Empty temps in response")
+            elif "reason" in data:
+                # Open-Meteo returns {"reason": "..."} for errors
+                print(f"  [MODEL {model_name}] API error: {data['reason']}")
+            elif "error" in data:
+                print(f"  [MODEL {model_name}] API error: {data['error']}")
+            else:
+                print(f"  [MODEL {model_name}] HTTP {r.status_code}: {str(data)[:150]}")
         except Exception as e:
-            print(f"  [MODEL {model_name} ERR] {e}")
+            print(f"  [MODEL {model_name} ERR] {type(e).__name__}: {e}")
 
-        time.sleep(0.2)  # be polite to API
+        time.sleep(0.5)
 
     if not results:
         return None
