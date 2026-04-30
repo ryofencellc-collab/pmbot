@@ -57,7 +57,7 @@ BET_SMALL   = 10.0   # edge >= 20%
 MAX_BETS_PER_CITY = 1
 SPREAD_LIMIT      = 3.0
 DAYS_MIN          = 1
-DAYS_AHEAD        = 7   # scan up to 7 days — V2.6 test will tell us real window
+DAYS_AHEAD        = 2   # V2.6 confirmed: Atlanta/Dallas/NYC markets only open 0-2 days out
 
 
 # ─────────────────────────────────────────────
