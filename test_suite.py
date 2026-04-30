@@ -297,6 +297,49 @@ def _prob(lo, hi, consensus, bias, std):
     return _cdf(hi+1, c, std) - _cdf(lo, c, std)
 
 
+@test("V2.6", "How far out do markets open for Atlanta, Dallas, NYC?")
+def test_market_window_all_cities():
+    """
+    Test each proven city to find actual market availability window.
+    This determines what DAYS_AHEAD should be set to.
+    """
+    import time as _time
+    cities = {
+        "Atlanta": "atlanta",
+        "Dallas":  "dallas",
+        "NYC":     "nyc",
+    }
+    from datetime import date as _date, timedelta as _td
+    today = _date.today()
+    summary = {}
+
+    for city, slug in cities.items():
+        open_days = []
+        for days in range(0, 8):
+            target    = today + _td(days=days)
+            slug_date = target.strftime("%B-%-d").lower()
+            event_slug = f"highest-temperature-in-{slug}-on-{slug_date}-{target.year}"
+            try:
+                r = requests.get(f"{GAMMA}/events",
+                    params={"slug": event_slug}, timeout=10)
+                data = r.json()
+                if data and isinstance(data, list) and data:
+                    markets = data[0].get("markets", [])
+                    active  = [m for m in markets if m.get("acceptingOrders")]
+                    if active:
+                        open_days.append(days)
+            except Exception:
+                pass
+            _time.sleep(0.3)
+        summary[city] = open_days
+
+    lines = [f"{city}: days={days}" for city, days in summary.items()]
+    all_days = [d for days in summary.values() for d in days]
+    max_days = max(all_days) if all_days else 0
+
+    return True,         f"Market windows: {summary} | Recommended DAYS_AHEAD={max_days}",         None
+
+
 @test("V3.1", "Probability math sums to 100% across all ranges")
 def test_prob_sums_to_100():
     """All range probabilities must sum to ~100%."""
