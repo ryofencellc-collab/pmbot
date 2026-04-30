@@ -34,10 +34,17 @@ EST_OFFSET = -5
 # DO NOT add cities without 20+ days of verified data
 # ─────────────────────────────────────────────
 CITY_ACCURACY = {
-    # bias = mean(forecast - actual), negative = model runs cold
-    # std  = standard deviation of forecast errors
-    "Atlanta": {"bias": -1.33, "std": 1.05, "days": 28},
-    "Dallas":  {"bias": -0.30, "std": 1.90, "days": 28},
+    # bias = mean signed error (forecast - actual)
+    #   negative = model runs cold (underforecasts)
+    #   positive = model runs warm (overforecasts)
+    # std = standard deviation of signed errors
+    # All values from real 30-day accuracy data as of 2026-04-30
+    # Source: /forecast/city-accuracy?days=30
+    # DO NOT add cities without 20+ days of real data
+    "Atlanta": {"bias": -0.78, "std": 1.37, "days": 29},  # 79% accuracy ✅ BET BIG
+    "Dallas":  {"bias": -0.63, "std": 1.82, "days": 29},  # 69% accuracy ✅ TRADE
+    "NYC":     {"bias":  2.10, "std": 1.94, "days": 30},  # 57% accuracy ⚠️ CAUTION
+    # Seattle: std=3.33 — too noisy, skip until improves
 }
 
 # Trading parameters
