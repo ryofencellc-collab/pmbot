@@ -215,7 +215,7 @@ def run_scheduler():
                 print(f"[SCHEDULER] City cards cache error: {e}")
 
         # Every 30 min: paper scan + check outcomes
-        check_key = f"{today}-{hour}-{minute // 30}"
+        check_key = f"{today}-{hour}-{minute // 60}"  # scan once per hour to stay within Open-Meteo free tier
         if last_outcome != check_key:
             # Run paper trading scan
             try:
