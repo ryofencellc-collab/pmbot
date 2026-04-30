@@ -621,6 +621,139 @@ def test_full_pipeline():
         None
 
 
+# ══════════════════════════════════════════════════════
+# VARIABLE 7: DIRECTION CONSISTENCY
+# Does the filter actually block bets against our forecast?
+# ══════════════════════════════════════════════════════
+
+@test("V7.1", "Direction filter blocks bets against forecast")
+def test_direction_blocks_wrong_bets():
+    """
+    The Madrid/Sao Paulo problem: forecast=21C, market asks 'will it be 18C or below?'
+    Our model says NO it won't be that low — so we must NOT bet YES on that.
+    """
+    import re as _re
+
+    def parse_range_local(question, unit):
+        orig = question.lower()
+        q = orig[:orig.rfind(" on ")] if " on " in orig else orig
+        if unit == "F":
+            nums = [float(n) for n in _re.findall(r"-?\d+\.?\d*", q) if -30 < float(n) < 150]
+        else:
+            nums = [float(n) for n in _re.findall(r"-?\d+\.?\d*", q) if -30 < float(n) < 55]
+        if not nums: return None, None, None
+        if "or higher" in orig or "or above" in orig: return nums[0], 999, "higher"
+        if "or below" in orig or "or lower" in orig: return -999, nums[-1], "lower"
+        if len(nums) >= 2: return min(nums), max(nums), "exact"
+        if len(nums) == 1: return nums[0], nums[0]+1, "exact"
+        return None, None, None
+
+    def is_consistent(lo, hi, direction, corrected, std):
+        if direction == "higher": return corrected >= lo
+        if direction == "lower":  return corrected <= hi
+        if direction == "exact":
+            center = (lo + hi) / 2.0
+            return abs(corrected - center) <= 1.5 * std
+        return False
+
+    failures = []
+
+    # These should ALL be BLOCKED (betting against forecast)
+    blocked_cases = [
+        # (question, unit, consensus, bias, std, description)
+        ("Will the highest temperature in Madrid be 18°C or below on April 25?",
+         "C", 20.9, 0.0, 3.0, "Madrid: forecast=20.9C, betting ≤18C — WRONG"),
+        ("Will the highest temperature in Sao Paulo be 25°C or below on April 27?",
+         "C", 26.6, 0.0, 3.0, "Sao Paulo: forecast=26.6C, betting ≤25C — WRONG"),
+        ("Will the highest temperature in Atlanta be 60°F or higher on April 30?",
+         "F", 55.0, -0.78, 1.37, "Atlanta: forecast=55F corrected=55.78F, betting ≥60F — WRONG"),
+    ]
+
+    # These should ALL be ALLOWED (betting with forecast)
+    allowed_cases = [
+        ("Will the highest temperature in Atlanta be 76-77°F on April 29?",
+         "F", 76.0, -0.78, 1.37, "Atlanta: forecast=76F, range contains corrected=76.78F — CORRECT"),
+        ("Will the highest temperature in Seoul be 20°C or higher on April 26?",
+         "C", 23.4, 0.0, 3.0, "Seoul: forecast=23.4C, betting ≥20C — CORRECT"),
+        ("Will the highest temperature in NYC be 58-59°F on May 1?",
+         "F", 60.0, 2.10, 1.94, "NYC: forecast=60F corrected=57.9F, range nearby — CORRECT"),
+    ]
+
+    for q, unit, consensus, bias, std, desc in blocked_cases:
+        lo, hi, direction = parse_range_local(q, unit)
+        corrected = consensus - bias
+        if is_consistent(lo, hi, direction, corrected, std):
+            failures.append(f"SHOULD BE BLOCKED but wasn't: {desc}")
+
+    for q, unit, consensus, bias, std, desc in allowed_cases:
+        lo, hi, direction = parse_range_local(q, unit)
+        corrected = consensus - bias
+        if not is_consistent(lo, hi, direction, corrected, std):
+            failures.append(f"SHOULD BE ALLOWED but was blocked: {desc}")
+
+    if failures:
+        return False, "\n".join(failures), "Direction consistency filter is broken"
+    return True, f"All {len(blocked_cases)} blocked + {len(allowed_cases)} allowed cases correct", None
+
+
+@test("V7.2", "Only proven cities are traded (no std=3.0 fake edges)")
+def test_only_proven_cities():
+    """Verify CITY_ACCURACY only contains cities with real data."""
+    try:
+        from strategy.paper_trade import CITY_ACCURACY
+    except ImportError:
+        try:
+            from paper_trade import CITY_ACCURACY
+        except ImportError:
+            return False, "Cannot import CITY_ACCURACY", "paper_trade.py not deployed"
+
+    problems = []
+    for city, acc in CITY_ACCURACY.items():
+        if acc["std"] >= 3.0:
+            problems.append(f"{city}: std={acc['std']} >= 3.0 (fake edge territory)")
+        if acc["days"] < 20:
+            problems.append(f"{city}: only {acc['days']} days of data (need 20+)")
+
+    if problems:
+        return False, "\n".join(problems), "Remove cities with insufficient data"
+
+    cities = list(CITY_ACCURACY.keys())
+    return True, f"Proven cities: {cities} — all have real std < 3.0 and 20+ days", None
+
+
+@test("V7.3", "Edge calculation returns None for untrusted cities")
+def test_untrusted_cities_blocked():
+    """Cities not in CITY_ACCURACY must return None from calculate_edge."""
+    try:
+        from strategy.paper_trade import calculate_edge
+    except ImportError:
+        try:
+            from paper_trade import calculate_edge
+        except ImportError:
+            return False, "Cannot import calculate_edge", "paper_trade.py not deployed"
+
+    untrusted = ["Seoul", "Tokyo", "London", "Paris", "Singapore",
+                 "Munich", "Milan", "Madrid", "Warsaw", "Taipei",
+                 "Tel Aviv", "Shanghai", "Beijing", "Buenos Aires",
+                 "Sao Paulo", "Toronto", "Seattle"]
+
+    blocked = []
+    leaked  = []
+    for city in untrusted:
+        result = calculate_edge(
+            f"Will the highest temperature in {city} be 20°C or higher on May 1?",
+            20.0, "C", city, 5.0
+        )
+        if result is None:
+            blocked.append(city)
+        else:
+            leaked.append(f"{city} (edge={result['edge']:+.1%})")
+
+    if leaked:
+        return False, f"These untrusted cities are being traded: {leaked}",                "Remove from CITY_ACCURACY or fix calculate_edge city check"
+    return True, f"All {len(blocked)} untrusted cities correctly blocked", None
+
+
 def run_all_tests():
     """Run all tests and return results."""
     output = []
