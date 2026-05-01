@@ -340,6 +340,72 @@ def test_market_window_all_cities():
     return True,         f"Market windows: {summary} | Recommended DAYS_AHEAD={max_days}",         None
 
 
+@test("V2.7", "What time do markets open? Check price history on a known market")
+def test_market_open_time():
+    """
+    We need to know WHEN markets open each day.
+    Strategy: find an Atlanta market for tomorrow and check if it has
+    price history we can inspect, or check the market creation time.
+    """
+    from datetime import date as _date, timedelta as _td
+    import time as _time
+
+    today = _date.today()
+    found_info = []
+
+    for days in range(1, 3):
+        target    = today + _td(days=days)
+        slug_date = target.strftime("%B-%-d").lower()
+        slug      = f"highest-temperature-in-atlanta-on-{slug_date}-{target.year}"
+
+        try:
+            r = requests.get(f"{GAMMA}/events",
+                params={"slug": slug}, timeout=15)
+            data = r.json()
+            if not data or not isinstance(data, list) or not data:
+                continue
+
+            event = data[0]
+            markets = event.get("markets", [])
+            active  = [m for m in markets if m.get("acceptingOrders")]
+
+            if not active:
+                continue
+
+            # Check what metadata is available about market creation/open time
+            m = active[0]
+            keys = list(m.keys())
+
+            # Look for timing fields
+            timing_fields = {}
+            for k in ["startDate", "endDate", "createdAt", "updatedAt",
+                      "openTime", "closeTime", "startTime", "resolveTime",
+                      "gammaStartDate", "marketMakerAddress"]:
+                if k in m:
+                    timing_fields[k] = m[k]
+
+            found_info.append({
+                "target": str(target),
+                "days_out": days,
+                "n_active": len(active),
+                "timing_fields": timing_fields,
+                "all_keys": keys[:15],  # first 15 keys
+            })
+        except Exception as e:
+            found_info.append({"error": str(e)})
+
+        _time.sleep(0.5)
+
+    if not found_info:
+        return False, "No markets found to inspect", "Check slug format"
+
+    detail = " | ".join([
+        f"{i['target']}: {i.get('timing_fields', {})} keys={i.get('all_keys', [])}"
+        for i in found_info if 'error' not in i
+    ])
+    return True, f"Market metadata: {detail}", None
+
+
 @test("V3.1", "Probability math sums to 100% across all ranges")
 def test_prob_sums_to_100():
     """All range probabilities must sum to ~100%."""
