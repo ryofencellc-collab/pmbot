@@ -2488,6 +2488,141 @@ def test_openmeteo():
     return {"target_date": target, "models": results}
 
 
+@app.get("/test-backtest-apis")
+def test_backtest_apis():
+    """
+    Test whether historical data APIs are available for backtesting.
+    Checks:
+    1. Polymarket CLOB price history for a known past Atlanta market
+    2. Open-Meteo historical forecast API (forecast-as-of-that-day)
+    3. Open-Meteo archive API (actual observed temperatures)
+    """
+    import requests as _requests
+    from datetime import date as _date
+    results = {}
+
+    # ── TEST 1: Polymarket CLOB price history ──────────────────────────
+    try:
+        # Find April 1 Atlanta market
+        r = _requests.get(
+            "https://gamma-api.polymarket.com/events",
+            params={"slug": "highest-temperature-in-atlanta-on-april-1-2026"},
+            timeout=10
+        )
+        data = r.json()
+        if data and isinstance(data, list) and data[0].get("markets"):
+            m = data[0]["markets"][0]
+            condition_id = m.get("conditionId")
+            token_ids = m.get("clobTokenIds")
+
+            results["polymarket_gamma"] = {
+                "status": "✅ found",
+                "question": m.get("question", "")[:60],
+                "conditionId": condition_id,
+                "clobTokenIds": token_ids,
+                "volume": m.get("volume"),
+                "created_at": m.get("createdAt"),
+            }
+
+            # Try CLOB price history
+            if condition_id:
+                try:
+                    clob_r = _requests.get(
+                        f"https://clob.polymarket.com/prices-history",
+                        params={
+                            "market": condition_id,
+                            "interval": "all",
+                            "fidelity": 60
+                        },
+                        timeout=10
+                    )
+                    clob_data = clob_r.json()
+                    history = clob_data.get("history", [])
+                    results["polymarket_clob_history"] = {
+                        "status": "✅ available" if history else "⚠️ empty",
+                        "points": len(history),
+                        "first": history[0] if history else None,
+                        "last": history[-1] if history else None,
+                    }
+                except Exception as e2:
+                    results["polymarket_clob_history"] = {"status": f"❌ {str(e2)[:100]}"}
+        else:
+            results["polymarket_gamma"] = {"status": "❌ market not found"}
+    except Exception as e:
+        results["polymarket_gamma"] = {"status": f"❌ {str(e)[:100]}"}
+
+    # ── TEST 2: Open-Meteo historical forecast API ─────────────────────
+    # This returns what the model predicted on that day — not reanalysis
+    try:
+        r2 = _requests.get(
+            "https://historical-forecast-api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": 33.749,
+                "longitude": -84.388,
+                "start_date": "2026-04-01",
+                "end_date": "2026-04-03",
+                "daily": "temperature_2m_max",
+                "temperature_unit": "fahrenheit",
+                "models": "gfs_seamless",
+                "timezone": "America/New_York",
+            },
+            timeout=15
+        )
+        data2 = r2.json()
+        daily = data2.get("daily", {})
+        dates = daily.get("time", [])
+        temps = daily.get("temperature_2m_max", [])
+        results["openmeteo_historical_forecast"] = {
+            "status": "✅ available" if dates else "❌ empty",
+            "description": "Archived GFS forecasts — what model predicted on that day",
+            "days_returned": len(dates),
+            "sample": [{"date": d, "forecast_max_f": t} for d, t in zip(dates[:3], temps[:3])],
+        }
+    except Exception as e:
+        results["openmeteo_historical_forecast"] = {"status": f"❌ {str(e)[:100]}"}
+
+    # ── TEST 3: Open-Meteo archive (actual observed temps) ─────────────
+    try:
+        r3 = _requests.get(
+            "https://archive-api.open-meteo.com/v1/archive",
+            params={
+                "latitude": 33.749,
+                "longitude": -84.388,
+                "start_date": "2026-04-01",
+                "end_date": "2026-04-03",
+                "daily": "temperature_2m_max",
+                "temperature_unit": "fahrenheit",
+                "timezone": "America/New_York",
+            },
+            timeout=15
+        )
+        data3 = r3.json()
+        daily3 = data3.get("daily", {})
+        dates3 = daily3.get("time", [])
+        temps3 = daily3.get("temperature_2m_max", [])
+        results["openmeteo_archive_actuals"] = {
+            "status": "✅ available" if dates3 else "❌ empty",
+            "description": "Real observed temperatures — ground truth for backtest",
+            "days_returned": len(dates3),
+            "sample": [{"date": d, "actual_max_f": t} for d, t in zip(dates3[:3], temps3[:3])],
+        }
+    except Exception as e:
+        results["openmeteo_archive_actuals"] = {"status": f"❌ {str(e)[:100]}"}
+
+    # ── SUMMARY ────────────────────────────────────────────────────────
+    all_pass = all(
+        "✅" in str(v.get("status", ""))
+        for v in results.values()
+    )
+    results["summary"] = {
+        "backtest_viable": all_pass,
+        "verdict": "✅ All APIs available — backtest can use 90 days of real data"
+                   if all_pass else
+                   "⚠️ Some APIs unavailable — check individual results above"
+    }
+
+    return results
+
 @app.get("/db-migrate")
 def db_migrate():
     """Add missing columns to paper_trades table."""
