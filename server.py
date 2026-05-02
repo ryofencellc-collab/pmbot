@@ -2488,6 +2488,97 @@ def test_openmeteo():
     return {"target_date": target, "models": results}
 
 
+
+@app.get("/test-backtest-prices")
+def test_backtest_prices():
+    """
+    Dig deeper into Polymarket historical price options.
+    Try multiple approaches to get past market prices.
+    """
+    import requests as _requests
+    results = {}
+
+    condition_id = "0xdf06cad12a0ec7e34331fa8c35a8aa2f668a5fc5f7c4e9d961ac538d155ea357"
+    token_id = "29185769007270931991136565589743280866291002679444898357035077087191303042599"
+
+    # Approach 1: CLOB trades endpoint
+    try:
+        r = _requests.get(
+            f"https://clob.polymarket.com/trades",
+            params={"market": condition_id, "limit": 5},
+            timeout=10
+        )
+        data = r.json()
+        results["clob_trades"] = {
+            "status": "✅" if data else "⚠️ empty",
+            "count": len(data) if isinstance(data, list) else None,
+            "sample": data[:2] if isinstance(data, list) and data else data
+        }
+    except Exception as e:
+        results["clob_trades"] = {"status": f"❌ {str(e)[:100]}"}
+
+    # Approach 2: CLOB price history with token ID instead
+    try:
+        r2 = _requests.get(
+            f"https://clob.polymarket.com/prices-history",
+            params={"market": token_id, "interval": "all", "fidelity": 60},
+            timeout=10
+        )
+        data2 = r2.json()
+        history = data2.get("history", [])
+        results["clob_prices_by_token"] = {
+            "status": "✅ available" if history else "⚠️ empty",
+            "points": len(history),
+            "first": history[0] if history else None,
+            "last": history[-1] if history else None,
+        }
+    except Exception as e:
+        results["clob_prices_by_token"] = {"status": f"❌ {str(e)[:100]}"}
+
+    # Approach 3: Gamma market outcomePrices (snapshot)
+    try:
+        r3 = _requests.get(
+            "https://gamma-api.polymarket.com/events",
+            params={"slug": "highest-temperature-in-atlanta-on-april-1-2026"},
+            timeout=10
+        )
+        data3 = r3.json()
+        if data3 and data3[0].get("markets"):
+            markets = data3[0]["markets"]
+            prices = []
+            for m in markets[:3]:
+                prices.append({
+                    "question": m.get("question", "")[:50],
+                    "outcomePrices": m.get("outcomePrices"),
+                    "volume": m.get("volume"),
+                    "lastTradePrice": m.get("lastTradePrice"),
+                    "bestBid": m.get("bestBid"),
+                    "bestAsk": m.get("bestAsk"),
+                })
+            results["gamma_price_snapshot"] = {
+                "status": "✅ found",
+                "note": "These are FINAL prices, not historical",
+                "markets": prices
+            }
+    except Exception as e:
+        results["gamma_price_snapshot"] = {"status": f"❌ {str(e)[:100]}"}
+
+    # Approach 4: Check if Polymarket has a timeseries endpoint
+    try:
+        r4 = _requests.get(
+            f"https://clob.polymarket.com/timeseries",
+            params={"market": condition_id},
+            timeout=10
+        )
+        results["clob_timeseries"] = {
+            "status_code": r4.status_code,
+            "response": r4.json() if r4.status_code == 200 else r4.text[:200]
+        }
+    except Exception as e:
+        results["clob_timeseries"] = {"status": f"❌ {str(e)[:100]}"}
+
+    return results
+
 @app.get("/test-backtest-apis")
 def test_backtest_apis():
     """
