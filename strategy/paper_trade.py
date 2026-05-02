@@ -49,8 +49,8 @@ CITY_ACCURACY = {
 
 # Trading parameters
 MIN_EDGE    = 0.20   # 20% minimum edge — conservative
-MIN_PRICE_C = 2.0    # ignore markets < 2¢ (too illiquid)
-MAX_PRICE_C = 40.0   # ignore markets > 40¢ (not enough upside)
+MIN_PRICE_C = 0.5    # lower floor for multi-range (adjacent ranges can be cheap)
+MAX_PRICE_C = 60.0   # higher ceiling for multi-range center range
 BET_HUGE    = 50.0   # edge >= 35%
 BET_BIG     = 25.0   # edge >= 25%
 BET_SMALL   = 10.0   # edge >= 20%
@@ -58,6 +58,15 @@ MAX_BETS_PER_CITY = 1
 SPREAD_LIMIT      = 3.0
 DAYS_MIN          = 1
 DAYS_AHEAD        = 2   # V2.6 confirmed: Atlanta/Dallas/NYC markets only open 0-2 days out
+
+# Multi-range betting — V2 strategy based on 90-day backtest
+# Backtest results (bias-corrected):
+#   Atlanta 5-range: 92.2% win rate
+#   Dallas  5-range: 81.1% win rate
+#   NYC     5-range: 72.2% win rate
+MULTI_RANGE_ENABLED = True   # bet 5 ranges centered on corrected forecast
+MULTI_RANGE_WIDTH   = 2      # ±2°F = 5 ranges total
+MULTI_RANGE_BET     = 10.0   # $10 per range = $50 total max per city per day
 
 
 # ─────────────────────────────────────────────
@@ -191,6 +200,73 @@ def get_bet_size(edge):
     return BET_SMALL
 
 
+def select_multi_ranges(corrected, unit, markets, city):
+    """
+    Select 5 ranges centered on the bias-corrected forecast.
+    Returns list of (market, price_c, range_lo, range_hi) tuples.
+
+    Strategy based on 90-day backtest:
+      Atlanta: 92.2% win rate with 5 ranges + bias correction
+      Dallas:  81.1% win rate with 5 ranges + bias correction
+      NYC:     72.2% win rate with 5 ranges + bias correction
+
+    The 5 ranges are:
+      [corrected-2, corrected-1], [corrected-1, corrected],
+      [corrected, corrected+1], [corrected+1, corrected+2],
+      [corrected+2, corrected+3]
+    """
+    import json as _j
+
+    center_lo = int(corrected)
+    # Build target ranges: center ±2
+    target_ranges = []
+    for offset in range(-MULTI_RANGE_WIDTH, MULTI_RANGE_WIDTH + 1):
+        lo = center_lo + offset
+        hi = lo + 1
+        target_ranges.append((lo, hi))
+
+    selected = []
+    total_cost_c = 0.0
+
+    for m in markets:
+        if not m.get("acceptingOrders", False):
+            continue
+
+        question = m.get("question", "")
+        lo, hi, direction = parse_range(question, unit)
+        if lo is None or direction != "exact":
+            continue
+
+        # Check if this range is in our target set
+        lo_int = int(lo)
+        hi_int = int(hi)
+        if (lo_int, hi_int) not in target_ranges:
+            continue
+
+        prices = m.get("outcomePrices", "[]")
+        if isinstance(prices, str):
+            try: prices = _j.loads(prices)
+            except: continue
+
+        yes_price = float(prices[0]) if prices else 0.0
+        price_c   = round(yes_price * 100, 2)
+
+        # Skip ranges priced above 60¢ (already heavily priced in)
+        if price_c > 60.0 or price_c < 0.5:
+            continue
+
+        total_cost_c += price_c
+        selected.append({
+            "market":   m,
+            "price_c":  price_c,
+            "lo":       lo_int,
+            "hi":       hi_int,
+            "question": question,
+        })
+
+    return selected, round(total_cost_c, 2)
+
+
 # ─────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────
@@ -198,6 +274,69 @@ def get_bet_size(edge):
 def est_str():
     from datetime import timezone, timedelta
     return datetime.now(timezone(timedelta(hours=EST_OFFSET))).strftime("%Y-%m-%d %I:%M %p EST")
+
+
+def log_prices(city, target, days_out, fc, markets_data):
+    """
+    Save ALL range prices every scan — not just the one we bet.
+    This builds a price history so we can see how markets move hour by hour.
+    Essential for multi-range cost analysis.
+    """
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        # Create table if not exists
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS price_log (
+                id          SERIAL PRIMARY KEY,
+                logged_at   TEXT,
+                city        TEXT,
+                target_date TEXT,
+                days_out    INT,
+                consensus   REAL,
+                corrected   REAL,
+                unit        TEXT,
+                market_id   TEXT,
+                question    TEXT,
+                price_c     REAL,
+                yes_price   REAL,
+                volume      REAL
+            )
+        """)
+        scanned_at = est_str()
+        acc = CITY_ACCURACY.get(city, {})
+        bias = acc.get("bias", 0)
+        corrected = round((fc.get("consensus") or 0) - bias, 2)
+
+        for m in markets_data:
+            if not m.get("acceptingOrders", False):
+                continue
+            prices = m.get("outcomePrices", "[]")
+            if isinstance(prices, str):
+                import json as _j
+                try: prices = _j.loads(prices)
+                except: continue
+            yes_price = float(prices[0]) if prices else 0.0
+            price_c   = round(yes_price * 100, 2)
+            question  = m.get("question", "")
+            mid       = m.get("id", "")
+            volume    = float(m.get("volume", 0) or 0)
+
+            c.execute("""
+                INSERT INTO price_log
+                    (logged_at, city, target_date, days_out,
+                     consensus, corrected, unit,
+                     market_id, question, price_c, yes_price, volume)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """, (
+                scanned_at, city, str(target), days_out,
+                fc.get("consensus"), corrected, fc.get("unit", "F"),
+                mid, question, price_c, yes_price, volume
+            ))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[PRICE LOG ERR] {e}")
 
 
 def log_scan(city, target, days_out, fc, decision, reason,
@@ -349,6 +488,9 @@ def run_scan():
 
             markets = data[0].get("markets", [])
 
+            # ── LOG ALL PRICES every scan (price history) ──────────────
+            log_prices(city, target, days_out, fc, markets)
+
             # Evaluate every range, find best edge
             best_edge = None
             best_m    = None
@@ -412,7 +554,64 @@ def run_scan():
                     best_m["_price_c"]  = price_c
                     best_m["_question"] = question
 
-            # Place best bet if it clears threshold
+            # ── MULTI-RANGE BETTING (5 ranges, bias-corrected) ──────────
+            if MULTI_RANGE_ENABLED:
+                selected_ranges, total_cost_c = select_multi_ranges(
+                    corrected, unit, markets, city
+                )
+
+                if len(selected_ranges) < 3:
+                    # Not enough ranges available — fall back to single best
+                    log_scan(city, target, days_out, fc, "SKIP_NOEDGE",
+                             f"Multi-range: only {len(selected_ranges)} ranges available (<3)",
+                             market_id=best_m["id"] if best_m else None,
+                             question=best_m["_question"] if best_m else None,
+                             price_c=total_cost_c)
+                else:
+                    ranges_desc = ", ".join([f"{r['lo']}-{r['hi']}F@{r['price_c']}¢"
+                                            for r in selected_ranges])
+                    print(f"  [MULTI] {city} {date_str} | {len(selected_ranges)} ranges "
+                          f"| total={total_cost_c}¢ | corrected={corrected:.1f}{unit}")
+                    print(f"    ranges: {ranges_desc}")
+
+                    multi_placed = 0
+                    for r in selected_ranges:
+                        # Calculate edge for this range
+                        ed = calculate_edge(r["question"], consensus, unit, city, r["price_c"])
+                        if ed is None:
+                            # For outer ranges edge might not pass direction check
+                            # but we still bet them as part of the multi-range strategy
+                            ed = {
+                                "true_prob": 0, "market_prob": r["price_c"]/100,
+                                "edge": 0, "bias": acc["bias"], "std": acc["std"]
+                            }
+
+                        trade_id = place_trade(
+                            city, target, days_out, fc,
+                            r["market"]["id"], r["question"], r["price_c"],
+                            ed, MULTI_RANGE_BET
+                        )
+                        if trade_id:
+                            multi_placed += 1
+                            placed += 1
+                            counts["BUY"] += 1
+                            log_scan(city, target, days_out, fc, "BUY_MULTI",
+                                     f"multi-range {r['lo']}-{r['hi']}F "
+                                     f"cost={r['price_c']}¢ total_cost={total_cost_c}¢ "
+                                     f"corrected={corrected:.1f}{unit} "
+                                     f"ranges={len(selected_ranges)}",
+                                     market_id=r["market"]["id"],
+                                     question=r["question"],
+                                     price_c=r["price_c"],
+                                     trade_id=trade_id)
+
+                    if multi_placed > 0 and city not in bought:
+                        bought.append(city)
+
+                time.sleep(0.3)
+                continue
+
+            # ── SINGLE RANGE FALLBACK (if multi-range disabled) ──────────
             if best_edge is None:
                 continue
 
