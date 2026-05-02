@@ -35,15 +35,16 @@ EST_OFFSET = -5
 # ─────────────────────────────────────────────
 CITY_ACCURACY = {
     # bias = mean signed error (forecast - actual)
-    #   negative = model runs cold (underforecasts)
-    #   positive = model runs warm (overforecasts)
-    # std = standard deviation of signed errors
-    # All values from real 30-day accuracy data as of 2026-04-30
-    # Source: /forecast/city-accuracy?days=30
+    #   positive = model runs warm (overforecasts) — subtract to correct
+    #   negative = model runs cold (underforecasts) — subtract to correct
+    # std = standard deviation of signed errors after bias correction
+    # Source: /backtest/bias-corrected — 90 days Feb 1 to May 1 2026
+    # 5-range win rates after bias correction:
+    #   Atlanta: 92.2% | Dallas: 81.1% | NYC: 72.2%
     # DO NOT add cities without 20+ days of real data
-    "Atlanta": {"bias": -0.78, "std": 1.37, "days": 29},  # 79% accuracy ✅ BET BIG
-    "Dallas":  {"bias": -0.63, "std": 1.82, "days": 29},  # 69% accuracy ✅ TRADE
-    "NYC":     {"bias":  2.10, "std": 1.94, "days": 30},  # 57% accuracy ⚠️ CAUTION
+    "Atlanta": {"bias": 1.17, "std": 1.70, "days": 90},  # 92.2% 5-range win rate ✅ BET BIG
+    "Dallas":  {"bias": 1.37, "std": 1.87, "days": 90},  # 81.1% 5-range win rate ✅ TRADE
+    "NYC":     {"bias": 1.13, "std": 3.10, "days": 90},  # 72.2% 5-range win rate ⚠️ CAUTION
     # Seattle: std=3.33 — too noisy, skip until improves
 }
 
@@ -242,6 +243,10 @@ def select_multi_ranges(corrected, unit, markets, city):
         hi_int = int(hi)
         if (lo_int, hi_int) not in target_ranges:
             continue
+
+        # NOTE: direction filter intentionally bypassed here.
+        # Multi-range strategy deliberately covers ranges on both sides
+        # of the corrected forecast — direction filter does not apply.
 
         prices = m.get("outcomePrices", "[]")
         if isinstance(prices, str):
@@ -576,14 +581,21 @@ def run_scan():
 
                     multi_placed = 0
                     for r in selected_ranges:
-                        # Calculate edge for this range
+                        # Multi-range: calculate true_prob for all ranges regardless of
+                        # direction filter. We're covering both sides intentionally.
+                        lo_r, hi_r, _ = parse_range(r["question"], unit)
+                        tp_r = true_probability(
+                            lo_r or 0, hi_r or 0, consensus, acc["bias"], acc["std"]
+                        ) if lo_r is not None else 0.0
                         ed = calculate_edge(r["question"], consensus, unit, city, r["price_c"])
                         if ed is None:
-                            # For outer ranges edge might not pass direction check
-                            # but we still bet them as part of the multi-range strategy
+                            # Outer ranges blocked by direction filter — expected for multi-range
                             ed = {
-                                "true_prob": 0, "market_prob": r["price_c"]/100,
-                                "edge": 0, "bias": acc["bias"], "std": acc["std"]
+                                "true_prob":   round(tp_r, 4),
+                                "market_prob": round(r["price_c"] / 100, 4),
+                                "edge":        round(tp_r - r["price_c"] / 100, 4),
+                                "bias":        acc["bias"],
+                                "std":         acc["std"],
                             }
 
                         trade_id = place_trade(
