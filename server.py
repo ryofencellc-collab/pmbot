@@ -2489,6 +2489,170 @@ def test_openmeteo():
 
 
 
+
+@app.get("/backtest/forecast-accuracy")
+def backtest_forecast_accuracy():
+    """
+    90-day backtest of forecast accuracy per city.
+    For each day, checks:
+    - Single range: did actual land exactly on forecast range?
+    - 3-range: did actual land within ±1F of forecast?
+    - 5-range: did actual land within ±2F of forecast?
+    Uses real Open-Meteo historical forecasts and archive actuals.
+    No guessing. No fake data.
+    """
+    import requests as _req
+    from datetime import date as _date, timedelta as _td
+
+    CITIES = {
+        "Atlanta": {"lat": 33.749, "lon": -84.388, "unit": "fahrenheit"},
+        "Dallas":  {"lat": 32.776, "lon": -96.797, "unit": "fahrenheit"},
+        "NYC":     {"lat": 40.713, "lon": -74.006, "unit": "fahrenheit"},
+    }
+
+    # 90 days back from yesterday (archive needs 1+ day lag)
+    end_date   = _date.today() - _td(days=1)
+    start_date = end_date - _td(days=89)
+
+    results = {}
+
+    for city, cfg in CITIES.items():
+        try:
+            # Fetch historical GFS forecasts (what model predicted each day)
+            fc_r = _req.get(
+                "https://historical-forecast-api.open-meteo.com/v1/forecast",
+                params={
+                    "latitude":         cfg["lat"],
+                    "longitude":        cfg["lon"],
+                    "start_date":       str(start_date),
+                    "end_date":         str(end_date),
+                    "daily":            "temperature_2m_max",
+                    "temperature_unit": cfg["unit"],
+                    "models":           "gfs_seamless",
+                    "timezone":         "auto",
+                },
+                timeout=20
+            )
+            fc_data = fc_r.json().get("daily", {})
+            fc_dates = fc_data.get("time", [])
+            fc_temps = fc_data.get("temperature_2m_max", [])
+
+            # Fetch actual observed temperatures
+            ac_r = _req.get(
+                "https://archive-api.open-meteo.com/v1/archive",
+                params={
+                    "latitude":         cfg["lat"],
+                    "longitude":        cfg["lon"],
+                    "start_date":       str(start_date),
+                    "end_date":         str(end_date),
+                    "daily":            "temperature_2m_max",
+                    "temperature_unit": cfg["unit"],
+                    "timezone":         "auto",
+                },
+                timeout=20
+            )
+            ac_data = ac_r.json().get("daily", {})
+            ac_dates = ac_data.get("time", [])
+            ac_temps = ac_data.get("temperature_2m_max", [])
+
+            # Align by date
+            ac_map = {d: t for d, t in zip(ac_dates, ac_temps) if t is not None}
+
+            days_analyzed = 0
+            single_wins   = 0  # exact range hit
+            triple_wins   = 0  # ±1F
+            five_wins     = 0  # ±2F
+            errors        = []  # signed errors (forecast - actual)
+            miss_details  = []  # days we missed and by how much
+
+            for d, fc in zip(fc_dates, fc_temps):
+                if fc is None or d not in ac_map:
+                    continue
+                actual = ac_map[d]
+                error  = round(fc - actual, 1)  # positive = model ran warm
+                errors.append(error)
+                days_analyzed += 1
+
+                # Single range: forecast rounded to nearest int
+                fc_range_lo = int(fc)
+                fc_range_hi = fc_range_lo + 1
+
+                # Did actual land in exact range?
+                if fc_range_lo <= actual < fc_range_hi:
+                    single_wins += 1
+                    triple_wins += 1
+                    five_wins   += 1
+                # ±1F (3 ranges)
+                elif (fc_range_lo - 1) <= actual < (fc_range_hi + 1):
+                    triple_wins += 1
+                    five_wins   += 1
+                # ±2F (5 ranges)
+                elif (fc_range_lo - 2) <= actual < (fc_range_hi + 2):
+                    five_wins += 1
+                else:
+                    miss_details.append({
+                        "date": d,
+                        "forecast": fc,
+                        "actual": actual,
+                        "error": error,
+                        "missed_by": round(abs(error), 1)
+                    })
+
+            if not errors:
+                results[city] = {"status": "no data"}
+                continue
+
+            import statistics as _stats
+            bias = round(sum(errors) / len(errors), 2)
+            std  = round(_stats.stdev(errors), 2)
+
+            # Error distribution
+            within_1 = sum(1 for e in errors if abs(e) <= 1.0)
+            within_2 = sum(1 for e in errors if abs(e) <= 2.0)
+            within_3 = sum(1 for e in errors if abs(e) <= 3.0)
+
+            results[city] = {
+                "days_analyzed": days_analyzed,
+                "bias_f": bias,
+                "std_f":  std,
+                "single_range_win_rate": f"{round(single_wins/days_analyzed*100,1)}%",
+                "triple_range_win_rate": f"{round(triple_wins/days_analyzed*100,1)}%",
+                "five_range_win_rate":   f"{round(five_wins/days_analyzed*100,1)}%",
+                "error_distribution": {
+                    "within_1f": f"{round(within_1/days_analyzed*100,1)}%",
+                    "within_2f": f"{round(within_2/days_analyzed*100,1)}%",
+                    "within_3f": f"{round(within_3/days_analyzed*100,1)}%",
+                },
+                "worst_misses": sorted(miss_details, key=lambda x: x["missed_by"], reverse=True)[:5],
+                "recommendation": (
+                    "✅ BET 3 RANGES" if triple_wins/days_analyzed >= 0.80
+                    else "⚠️ BET 3 RANGES WITH CAUTION" if triple_wins/days_analyzed >= 0.65
+                    else "❌ NEEDS MORE ANALYSIS"
+                )
+            }
+
+        except Exception as e:
+            import traceback
+            results[city] = {"status": f"error: {str(e)}", "trace": traceback.format_exc()[:300]}
+
+    # Overall summary
+    summary = {}
+    for city, r in results.items():
+        if "triple_range_win_rate" in r:
+            summary[city] = {
+                "3_range_win_rate": r["triple_range_win_rate"],
+                "bias": r["bias_f"],
+                "std":  r["std_f"],
+                "recommendation": r["recommendation"]
+            }
+
+    return {
+        "period": f"{start_date} to {end_date}",
+        "days": 90,
+        "summary": summary,
+        "detail": results
+    }
+
 @app.get("/test-backtest-prices")
 def test_backtest_prices():
     """
