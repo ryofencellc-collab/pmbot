@@ -325,6 +325,17 @@ def startup():
 
 # ── Health ────────────────────────────────────────────────────────────────────
 
+
+@app.get("/")
+def serve_dashboard():
+    """Serve the PolyEdge dashboard"""
+    from fastapi.responses import HTMLResponse
+    try:
+        with open("dashboard.html", "r") as f:
+            return HTMLResponse(content=f.read())
+    except:
+        return HTMLResponse(content="<h1>Dashboard not found</h1>")
+
 @app.api_route("/health", methods=["GET", "POST", "HEAD"])
 def health():
     try:
@@ -3032,6 +3043,162 @@ def test_backtest_prices():
         results["clob_timeseries"] = {"status": f"❌ {str(e)[:100]}"}
 
     return results
+
+
+@app.get("/archive-old-trades")
+def archive_old_trades():
+    """
+    Move all pre-clean-system trades to paper_trades_archive.
+    Clean system = trusted_city=True, placed after 2026-04-28.
+    Safe to run multiple times.
+    """
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS paper_trades_archive
+            AS SELECT * FROM paper_trades WHERE 1=0
+        """)
+
+        # Move old/broken trades to archive
+        c.execute("""
+            INSERT INTO paper_trades_archive
+            SELECT * FROM paper_trades
+            WHERE trusted_city IS NULL
+               OR trusted_city = false
+               OR (trusted_city = true AND edge < 0.20 AND edge IS NOT NULL)
+        """)
+        archived = c.rowcount
+
+        c.execute("""
+            DELETE FROM paper_trades
+            WHERE trusted_city IS NULL
+               OR trusted_city = false
+               OR (trusted_city = true AND edge < 0.20 AND edge IS NOT NULL)
+        """)
+
+        conn.commit()
+        conn.close()
+        return {
+            "status": "✅ done",
+            "archived": archived,
+            "message": f"Moved {archived} old trades to paper_trades_archive. Clean system only remains."
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/dashboard")
+def dashboard():
+    """
+    Clean trading dashboard — shows only clean system trades.
+    Returns all data needed for the frontend dashboard.
+    """
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+
+        # Clean trades summary
+        c.execute("""
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN outcome='Yes' THEN 1 ELSE 0 END) as wins,
+                SUM(CASE WHEN outcome='No' THEN 1 ELSE 0 END) as losses,
+                SUM(CASE WHEN outcome IS NULL THEN 1 ELSE 0 END) as pending,
+                COALESCE(SUM(pnl), 0) as total_pnl,
+                COALESCE(SUM(bet_size), 0) as total_invested
+            FROM paper_trades
+            WHERE trusted_city = true
+        """)
+        summary = dict(c.fetchone())
+        resolved = summary['wins'] + summary['losses']
+        summary['win_rate'] = round(summary['wins'] / resolved * 100, 1) if resolved > 0 else 0
+
+        # Pending trades with potential payout
+        c.execute("""
+            SELECT id, city, question, target_date, entry_price_c,
+                   bet_size, edge, true_prob, market_prob,
+                   placed_at, days_out, forecast_temp
+            FROM paper_trades
+            WHERE trusted_city = true AND outcome IS NULL
+            ORDER BY placed_at DESC
+        """)
+        pending = []
+        for row in c.fetchall():
+            r = dict(row)
+            if r['entry_price_c'] and r['entry_price_c'] > 0:
+                potential = round(r['bet_size'] * (100 / r['entry_price_c'] - 1), 2)
+            else:
+                potential = 0
+            r['potential_profit'] = potential
+            pending.append(r)
+
+        # Recent resolved trades
+        c.execute("""
+            SELECT id, city, question, target_date, entry_price_c,
+                   bet_size, outcome, pnl, edge, resolved_at, wu_actual
+            FROM paper_trades
+            WHERE trusted_city = true AND outcome IS NOT NULL
+            ORDER BY resolved_at DESC
+            LIMIT 20
+        """)
+        recent = [dict(r) for r in c.fetchall()]
+
+        # By city stats
+        c.execute("""
+            SELECT city,
+                   COUNT(*) as bets,
+                   SUM(CASE WHEN outcome='Yes' THEN 1 ELSE 0 END) as wins,
+                   COALESCE(SUM(pnl), 0) as pnl,
+                   COALESCE(AVG(edge), 0) as avg_edge
+            FROM paper_trades
+            WHERE trusted_city = true
+            GROUP BY city
+            ORDER BY pnl DESC
+        """)
+        by_city = [dict(r) for r in c.fetchall()]
+
+        # Price history summary (last 2 days)
+        try:
+            c.execute("""
+                SELECT city, target_date, question, 
+                       MIN(price_c) as min_price,
+                       MAX(price_c) as max_price,
+                       (array_agg(price_c ORDER BY logged_at ASC))[1] as open_price,
+                       (array_agg(price_c ORDER BY logged_at DESC))[1] as current_price,
+                       COUNT(*) as scans
+                FROM price_log
+                WHERE logged_at >= NOW() - INTERVAL '48 hours'
+                GROUP BY city, target_date, question
+                ORDER BY city, target_date, min_price DESC
+                LIMIT 50
+            """)
+            price_data = [dict(r) for r in c.fetchall()]
+        except:
+            price_data = []
+
+        conn.close()
+
+        # Calculate total potential if all pending win
+        total_potential = sum(p['potential_profit'] for p in pending)
+        pending_invested = sum(p['bet_size'] for p in pending)
+
+        return {
+            "summary": {
+                **summary,
+                "pending_invested": round(pending_invested, 2),
+                "potential_if_all_win": round(total_potential + summary['total_pnl'], 2),
+                "worst_case": round(summary['total_pnl'] - pending_invested, 2),
+            },
+            "pending": pending,
+            "recent_resolved": recent,
+            "by_city": by_city,
+            "price_movement": price_data,
+        }
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
 
 @app.get("/test-backtest-apis")
 def test_backtest_apis():
