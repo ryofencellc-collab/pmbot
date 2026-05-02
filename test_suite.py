@@ -457,8 +457,8 @@ def test_edge_identifies_mispricing():
         "80-81F": 0.29,
     }
     consensus = 76.0
-    bias = -0.78  # real 30-day Atlanta bias as of 2026-04-30
-    std = 1.37    # real 30-day Atlanta std as of 2026-04-30
+    bias = 1.17   # real 90-day Atlanta bias (Feb-May 2026)
+    std = 1.70    # real 90-day Atlanta std
     # 76-77F: our model should say ~64%
     tp_76_77 = _prob(76, 77, consensus, bias, std)
     edge = tp_76_77 - market_prices["76-77F"]
