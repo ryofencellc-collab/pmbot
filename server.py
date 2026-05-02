@@ -2490,6 +2490,197 @@ def test_openmeteo():
 
 
 
+
+@app.get("/backtest/bias-corrected")
+def backtest_bias_corrected():
+    """
+    90-day backtest WITH bias correction applied.
+    Shifts forecast down by real bias before checking which ranges to bet.
+    This is what the system actually does when placing trades.
+    """
+    import requests as _req
+    from datetime import date as _date, timedelta as _td
+    import statistics as _stats
+
+    CITIES = {
+        "Atlanta": {"lat": 33.749, "lon": -84.388, "unit": "fahrenheit", "bias": 1.17},
+        "Dallas":  {"lat": 32.776, "lon": -96.797, "unit": "fahrenheit", "bias": 1.37},
+        "NYC":     {"lat": 40.713, "lon": -74.006, "unit": "fahrenheit", "bias": 1.13},
+    }
+
+    end_date   = _date.today() - _td(days=1)
+    start_date = end_date - _td(days=89)
+
+    results = {}
+
+    for city, cfg in CITIES.items():
+        try:
+            fc_r = _req.get(
+                "https://historical-forecast-api.open-meteo.com/v1/forecast",
+                params={
+                    "latitude":         cfg["lat"],
+                    "longitude":        cfg["lon"],
+                    "start_date":       str(start_date),
+                    "end_date":         str(end_date),
+                    "daily":            "temperature_2m_max",
+                    "temperature_unit": cfg["unit"],
+                    "models":           "gfs_seamless",
+                    "timezone":         "auto",
+                },
+                timeout=20
+            )
+            fc_data = fc_r.json().get("daily", {})
+            fc_dates = fc_data.get("time", [])
+            fc_temps = fc_data.get("temperature_2m_max", [])
+
+            ac_r = _req.get(
+                "https://archive-api.open-meteo.com/v1/archive",
+                params={
+                    "latitude":         cfg["lat"],
+                    "longitude":        cfg["lon"],
+                    "start_date":       str(start_date),
+                    "end_date":         str(end_date),
+                    "daily":            "temperature_2m_max",
+                    "temperature_unit": cfg["unit"],
+                    "timezone":         "auto",
+                },
+                timeout=20
+            )
+            ac_data = ac_r.json().get("daily", {})
+            ac_dates = ac_data.get("time", [])
+            ac_temps = ac_data.get("temperature_2m_max", [])
+            ac_map = {d: t for d, t in zip(ac_dates, ac_temps) if t is not None}
+
+            days_analyzed = 0
+            single_wins = triple_wins = five_wins = seven_wins = 0
+            errors_after = []
+            miss_details = []
+            day_details  = []
+
+            for d, fc in zip(fc_dates, fc_temps):
+                if fc is None or d not in ac_map:
+                    continue
+                actual  = ac_map[d]
+                # Apply bias correction — shift forecast down
+                corrected = fc - cfg["bias"]
+                error_after = round(corrected - actual, 1)
+                errors_after.append(error_after)
+                days_analyzed += 1
+
+                # Base range on CORRECTED forecast
+                lo = int(corrected)
+                hi = lo + 1
+
+                hit_single = lo <= actual < hi
+                hit_triple = (lo - 1) <= actual < (hi + 1)
+                hit_five   = (lo - 2) <= actual < (hi + 2)
+                hit_seven  = (lo - 3) <= actual < (hi + 3)
+
+                if hit_single: single_wins += 1
+                if hit_triple: triple_wins += 1
+                if hit_five:   five_wins   += 1
+                if hit_seven:  seven_wins  += 1
+
+                day_details.append({
+                    "date":      d,
+                    "forecast":  fc,
+                    "corrected": round(corrected, 1),
+                    "actual":    actual,
+                    "error":     error_after,
+                    "hit_1":     hit_single,
+                    "hit_3":     hit_triple,
+                    "hit_5":     hit_five,
+                })
+
+                if not hit_five:
+                    miss_details.append({
+                        "date":      d,
+                        "forecast":  fc,
+                        "corrected": round(corrected, 1),
+                        "actual":    actual,
+                        "missed_by": round(abs(error_after), 1)
+                    })
+
+            if not errors_after:
+                results[city] = {"status": "no data"}
+                continue
+
+            bias_after = round(sum(errors_after) / len(errors_after), 2)
+            std_after  = round(_stats.stdev(errors_after), 2)
+
+            within_1 = sum(1 for e in errors_after if abs(e) <= 1.0)
+            within_2 = sum(1 for e in errors_after if abs(e) <= 2.0)
+            within_3 = sum(1 for e in errors_after if abs(e) <= 3.0)
+
+            s1  = round(single_wins / days_analyzed * 100, 1)
+            s3  = round(triple_wins / days_analyzed * 100, 1)
+            s5  = round(five_wins   / days_analyzed * 100, 1)
+            s7  = round(seven_wins  / days_analyzed * 100, 1)
+
+            # Profitability estimate
+            # Assume average combined cost: 1-range=8¢, 3-range=20¢, 5-range=32¢
+            # Payout = $1 per share, bet size = $10
+            # Profit per win = (1/cost - 1) * bet_size
+            est_costs = {"1": 0.08, "3": 0.20, "5": 0.32}
+            profit_1 = round((s1/100) * (1/est_costs["1"] - 1) * 10 - (1 - s1/100) * 10, 2)
+            profit_3 = round((s3/100) * (1/est_costs["3"] - 1) * 10 - (1 - s3/100) * 10, 2)
+            profit_5 = round((s5/100) * (1/est_costs["5"] - 1) * 10 - (1 - s5/100) * 10, 2)
+
+            if s5 >= 80:   rec = "✅ BET 5 RANGES — strong edge"
+            elif s5 >= 70: rec = "✅ BET 5 RANGES — good edge"
+            elif s3 >= 70: rec = "✅ BET 3 RANGES — good edge"
+            elif s5 >= 60: rec = "⚠️ BET 5 RANGES — marginal, needs real price data"
+            else:          rec = "❌ NOT READY — win rate too low"
+
+            results[city] = {
+                "days_analyzed":   days_analyzed,
+                "bias_applied":    cfg["bias"],
+                "residual_bias":   bias_after,
+                "residual_std":    std_after,
+                "win_rates": {
+                    "1_range": f"{s1}%",
+                    "3_range": f"{s3}%",
+                    "5_range": f"{s5}%",
+                    "7_range": f"{s7}%",
+                },
+                "error_distribution": {
+                    "within_1f": f"{round(within_1/days_analyzed*100,1)}%",
+                    "within_2f": f"{round(within_2/days_analyzed*100,1)}%",
+                    "within_3f": f"{round(within_3/days_analyzed*100,1)}%",
+                },
+                "estimated_profit_per_10_bets": {
+                    "1_range": f"${profit_1}",
+                    "3_range": f"${profit_3}",
+                    "5_range": f"${profit_5}",
+                },
+                "five_range_misses": sorted(miss_details, key=lambda x: x["missed_by"], reverse=True)[:5],
+                "recommendation": rec,
+            }
+
+        except Exception as e:
+            import traceback
+            results[city] = {"status": f"error: {str(e)}", "trace": traceback.format_exc()[:300]}
+
+    # Summary
+    summary = {}
+    for city, r in results.items():
+        if "win_rates" in r:
+            summary[city] = {
+                "5_range_win_rate":    r["win_rates"]["5_range"],
+                "3_range_win_rate":    r["win_rates"]["3_range"],
+                "residual_std":        r["residual_std"],
+                "est_profit_5_ranges": r["estimated_profit_per_10_bets"]["5_range"],
+                "recommendation":      r["recommendation"],
+            }
+
+    return {
+        "period":  f"{start_date} to {end_date}",
+        "days":    90,
+        "note":    "Bias correction applied — forecast shifted down by city bias before range selection",
+        "summary": summary,
+        "detail":  results,
+    }
+
 @app.get("/backtest/forecast-accuracy")
 def backtest_forecast_accuracy():
     """
