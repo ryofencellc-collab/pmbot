@@ -2844,6 +2844,105 @@ def backtest_forecast_accuracy():
         "detail": results
     }
 
+
+@app.get("/price-history")
+def price_history(city: str = None, days: int = 2):
+    """
+    Show how market prices moved hour by hour.
+    Use this to find the optimal entry time.
+    """
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+
+        # Create table if not exists yet
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS price_log (
+                id          SERIAL PRIMARY KEY,
+                logged_at   TEXT,
+                city        TEXT,
+                target_date TEXT,
+                days_out    INT,
+                consensus   REAL,
+                corrected   REAL,
+                unit        TEXT,
+                market_id   TEXT,
+                question    TEXT,
+                price_c     REAL,
+                yes_price   REAL,
+                volume      REAL
+            )
+        """)
+
+        from datetime import date as _date, timedelta as _td
+        since = str(_date.today() - _td(days=days))
+
+        query = """
+            SELECT logged_at, city, target_date, days_out,
+                   consensus, corrected, unit,
+                   question, price_c, volume
+            FROM price_log
+            WHERE target_date >= %s
+        """
+        params = [since]
+
+        if city:
+            query += " AND city = %s"
+            params.append(city)
+
+        query += " ORDER BY city, target_date, question, logged_at"
+
+        c.execute(query, params)
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+
+        # Group by city → target_date → question → price over time
+        grouped = {}
+        for r in rows:
+            key_city = r["city"]
+            key_date = r["target_date"]
+            key_q    = r["question"][:50] if r["question"] else ""
+
+            if key_city not in grouped:
+                grouped[key_city] = {}
+            if key_date not in grouped[key_city]:
+                grouped[key_city][key_date] = {}
+            if key_q not in grouped[key_city][key_date]:
+                grouped[key_city][key_date][key_q] = []
+
+            grouped[key_city][key_date][key_q].append({
+                "time":    r["logged_at"],
+                "price_c": r["price_c"],
+                "volume":  r["volume"],
+            })
+
+        # Summary: price range per range per day
+        summary = {}
+        for city_name, dates in grouped.items():
+            summary[city_name] = {}
+            for tdate, questions in dates.items():
+                summary[city_name][tdate] = {}
+                for q, prices in questions.items():
+                    price_list = [p["price_c"] for p in prices if p["price_c"]]
+                    if price_list:
+                        summary[city_name][tdate][q] = {
+                            "min_c":   min(price_list),
+                            "max_c":   max(price_list),
+                            "first_c": price_list[0],
+                            "last_c":  price_list[-1],
+                            "scans":   len(price_list),
+                            "movement": round(price_list[-1] - price_list[0], 2),
+                        }
+
+        return {
+            "total_rows": len(rows),
+            "summary": summary,
+            "raw": rows[:200],
+        }
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
+
 @app.get("/test-backtest-prices")
 def test_backtest_prices():
     """
