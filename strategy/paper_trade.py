@@ -70,7 +70,7 @@ BET_SMALL   = 10.0   # edge >= 20%
 MAX_BETS_PER_CITY = 1
 SPREAD_LIMIT      = 3.0
 DAYS_MIN          = 1
-DAYS_AHEAD        = 1   # V2.6 re-confirmed 2026-05-02: markets only open 0-1 days out
+DAYS_AHEAD        = 2   # V2.6: markets open 0-2 days out (confirmed again 2026-05-02)
 
 # Multi-range betting — V2 strategy based on 90-day backtest
 # Backtest results (bias-corrected):
