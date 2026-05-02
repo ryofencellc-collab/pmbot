@@ -36,16 +36,28 @@ EST_OFFSET = -5
 CITY_ACCURACY = {
     # bias = mean signed error (forecast - actual)
     #   positive = model runs warm (overforecasts) — subtract to correct
-    #   negative = model runs cold (underforecasts) — subtract to correct
     # std = standard deviation of signed errors after bias correction
     # Source: /backtest/bias-corrected — 90 days Feb 1 to May 1 2026
-    # 5-range win rates after bias correction:
-    #   Atlanta: 92.2% | Dallas: 81.1% | NYC: 72.2%
-    # DO NOT add cities without 20+ days of real data
-    "Atlanta": {"bias": 1.17, "std": 1.70, "days": 90},  # 92.2% 5-range win rate ✅ BET BIG
-    "Dallas":  {"bias": 1.37, "std": 1.87, "days": 90},  # 81.1% 5-range win rate ✅ TRADE
-    "NYC":     {"bias": 1.13, "std": 3.10, "days": 90},  # 72.2% 5-range win rate ⚠️ CAUTION
-    # Seattle: std=3.33 — too noisy, skip until improves
+    # DO NOT add cities without 20+ days of real accuracy data
+    # ── PROVEN (tradeable now) ──────────────────────────────────
+    "Atlanta": {"bias": 1.17, "std": 1.70, "days": 90, "lat": 33.749, "lon": -84.388, "unit": "F", "slug": "atlanta"},  # 92.2% ✅
+    "Dallas":  {"bias": 1.37, "std": 1.87, "days": 90, "lat": 32.776, "lon": -96.797, "unit": "F", "slug": "dallas"},   # 81.1% ✅
+    "NYC":     {"bias": 1.13, "std": 3.10, "days": 90, "lat": 40.713, "lon": -74.006, "unit": "F", "slug": "nyc"},      # 72.2% ⚠️
+    # ── LOGGING (collecting data, not yet tradeable) ────────────
+    # These cities have Polymarket markets. Forecast logger is now
+    # tracking them. Add to trading once 20+ days of data collected.
+    # "Miami":    {"bias": 0, "std": 3.0, "days": 0, "lat": 25.761, "lon": -80.191, "unit": "F", "slug": "miami"},
+    # "Chicago":  {"bias": 0, "std": 3.0, "days": 0, "lat": 41.878, "lon": -87.629, "unit": "F", "slug": "chicago"},
+    # "Houston":  {"bias": 0, "std": 3.0, "days": 0, "lat": 29.760, "lon": -95.369, "unit": "F", "slug": "houston"},
+    # "Seattle":  std=3.33 — too noisy
+}
+
+# Cities to track for forecast accuracy (not yet trading)
+# The forecast logger will collect data for these cities daily
+CITIES_LOGGING = {
+    "Miami":   {"lat": 25.761, "lon": -80.191, "unit": "F", "slug": "miami"},
+    "Chicago": {"lat": 41.878, "lon": -87.629, "unit": "F", "slug": "chicago"},
+    "Houston": {"lat": 29.760, "lon": -95.369, "unit": "F", "slug": "houston"},
 }
 
 # Trading parameters
