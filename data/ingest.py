@@ -329,15 +329,15 @@ def fetch_price_histories():
         if not hist or "history" not in hist:
             continue
 
-        price_rows = [(mid, int(p["t"]), float(p["p"]), round(1 - float(p["p"]), 4))
+        price_rows = [(mid, int(p["t"]), float(p["p"]))
                       for p in hist["history"] if p.get("t") and p.get("p") is not None]
 
         if price_rows:
             conn = get_conn()
             cur  = conn.cursor()
             cur.executemany(
-                "INSERT INTO price_snapshots (market_id, timestamp, yes_price, no_price) "
-                "VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                "INSERT INTO price_snapshots (market_id, timestamp, yes_price) "
+                "VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
                 price_rows)
             conn.commit()
             conn.close()
