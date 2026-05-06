@@ -2,463 +2,331 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PolyEdge Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>PolyEdge</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap');
 
-  :root {
-    --bg: #0a0a0f;
-    --surface: #12121a;
-    --surface2: #1a1a26;
-    --border: #2a2a3a;
-    --green: #00ff88;
-    --green-dim: #00ff8844;
-    --red: #ff4466;
-    --red-dim: #ff446633;
-    --yellow: #ffcc00;
-    --yellow-dim: #ffcc0022;
-    --blue: #4488ff;
-    --text: #e8e8f0;
-    --muted: #6666aa;
-    --font-mono: 'Space Mono', monospace;
-    --font-display: 'Syne', sans-serif;
-  }
+:root {
+  --bg:      #080810;
+  --s1:      #0f0f1a;
+  --s2:      #161624;
+  --border:  #252538;
+  --green:   #00ff88;
+  --gdim:    #00ff8830;
+  --red:     #ff3355;
+  --rdim:    #ff335530;
+  --yellow:  #ffcc00;
+  --ydim:    #ffcc0020;
+  --blue:    #4d8bff;
+  --muted:   #55557a;
+  --text:    #e0e0f0;
+  --mono:    'Space Mono', monospace;
+  --display: 'Syne', sans-serif;
+  --r:       4px;
+}
 
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font-family: var(--mono); font-size: 13px; overflow-x: hidden; }
 
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--font-mono);
-    min-height: 100vh;
-    padding: 24px;
-  }
+/* HEADER */
+.hdr {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; background: var(--bg); z-index: 100;
+}
+.logo { font-family: var(--display); font-weight: 800; font-size: 20px; color: var(--green); letter-spacing: -1px; }
+.sub  { font-size: 9px; color: var(--muted); letter-spacing: 2px; text-transform: uppercase; display: none; }
+.ts   { font-size: 10px; color: var(--muted); margin-left: auto; white-space: nowrap; }
+.rbtn {
+  background: var(--s2); border: 1px solid var(--border); color: var(--green);
+  font-family: var(--mono); font-size: 11px; padding: 6px 12px; cursor: pointer;
+  letter-spacing: 1px; border-radius: var(--r);
+}
+.rbtn:active { background: var(--gdim); }
 
-  .header {
-    display: flex;
-    align-items: baseline;
-    gap: 16px;
-    margin-bottom: 32px;
-    border-bottom: 1px solid var(--border);
-    padding-bottom: 20px;
-  }
+/* PAGE */
+.page { padding: 12px; max-width: 1400px; margin: 0 auto; }
 
-  .logo {
-    font-family: var(--font-display);
-    font-weight: 800;
-    font-size: 28px;
-    color: var(--green);
-    letter-spacing: -1px;
-  }
+/* KPI GRID - 2 col on mobile, 4 on desktop */
+.kpi-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+.kpi {
+  background: var(--s1); border: 1px solid var(--border); border-radius: var(--r);
+  padding: 14px; position: relative; overflow: hidden;
+}
+.kpi::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; }
+.kpi.g::before { background: var(--green); }
+.kpi.r::before { background: var(--red); }
+.kpi.y::before { background: var(--yellow); }
+.kpi.b::before { background: var(--blue); }
+.kl { font-size: 9px; color: var(--muted); letter-spacing: 2px; text-transform: uppercase; margin-bottom: 5px; }
+.kv { font-family: var(--display); font-weight: 800; font-size: 24px; line-height: 1; }
+.kv.g { color: var(--green); } .kv.r { color: var(--red); }
+.kv.y { color: var(--yellow); } .kv.b { color: var(--blue); }
+.ks { font-size: 10px; color: var(--muted); margin-top: 4px; }
 
-  .tagline {
-    font-size: 11px;
-    color: var(--muted);
-    letter-spacing: 2px;
-    text-transform: uppercase;
-  }
+/* SCENARIO ROW */
+.sc-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+.sc-box { background: var(--s1); border: 1px solid var(--border); border-radius: var(--r); padding: 14px; }
+.sc-lbl { font-size: 9px; color: var(--muted); letter-spacing: 1px; text-transform: uppercase; margin-bottom: 5px; }
+.sc-val { font-family: var(--display); font-weight: 800; font-size: 22px; }
 
-  .refresh-btn {
-    margin-left: auto;
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    color: var(--green);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    padding: 8px 16px;
-    cursor: pointer;
-    letter-spacing: 1px;
-    transition: all 0.2s;
-  }
-  .refresh-btn:hover { background: var(--green-dim); border-color: var(--green); }
+/* SECTION TITLE */
+.sec { font-family: var(--display); font-size: 10px; font-weight: 600; color: var(--muted); letter-spacing: 3px; text-transform: uppercase; margin: 16px 0 8px; }
 
-  .grid-4 {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 16px;
-    margin-bottom: 24px;
-  }
+/* CARD */
+.card { background: var(--s1); border: 1px solid var(--border); border-radius: var(--r); margin-bottom: 10px; overflow: hidden; }
 
-  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
-  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+/* TRADE ROW - mobile optimized */
+.tr {
+  display: grid;
+  grid-template-columns: 36px 1fr auto;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  align-items: start;
+}
+.tr:last-child { border-bottom: none; }
 
-  .card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    padding: 20px;
-    position: relative;
-    overflow: hidden;
-  }
+.ctag {
+  font-size: 9px; font-weight: 700; padding: 4px 5px;
+  border-radius: 2px; letter-spacing: 0.5px;
+  background: var(--s2); border: 1px solid var(--border);
+  text-align: center; align-self: center;
+}
+.ctag.atl { color: var(--green); border-color: #00ff8840; }
+.ctag.nyc { color: var(--blue);  border-color: #4d8bff40; }
+.ctag.dal { color: var(--yellow); border-color: #ffcc0040; }
 
-  .card::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 2px;
-  }
-  .card.green::before { background: var(--green); }
-  .card.red::before { background: var(--red); }
-  .card.yellow::before { background: var(--yellow); }
-  .card.blue::before { background: var(--blue); }
+.tm { min-width: 0; }
+.tq { font-size: 11px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 3px; }
+.tmeta { font-size: 10px; color: var(--muted); display: flex; gap: 6px; flex-wrap: wrap; }
+.ebar { display: flex; align-items: center; gap: 5px; margin-top: 4px; }
+.ebg { width: 44px; height: 3px; background: var(--s2); border-radius: 2px; flex-shrink: 0; }
+.ef { height: 3px; border-radius: 2px; background: var(--green); }
+.ef.neg { background: var(--red); }
+.ev { font-size: 10px; }
 
-  .card-label {
-    font-size: 10px;
-    color: var(--muted);
-    letter-spacing: 2px;
-    text-transform: uppercase;
-    margin-bottom: 8px;
-  }
+.tr-right { text-align: right; flex-shrink: 0; }
+.tpnl { font-family: var(--display); font-weight: 700; font-size: 15px; }
+.pos { color: var(--green); } .neg { color: var(--red); } .neu { color: var(--muted); }
 
-  .card-value {
-    font-family: var(--font-display);
-    font-size: 32px;
-    font-weight: 800;
-    line-height: 1;
-  }
+.bdg { display: inline-block; font-size: 9px; font-weight: 700; padding: 2px 6px; letter-spacing: 1px; border-radius: 2px; margin-top: 3px; }
+.bw { background: var(--gdim); color: var(--green); }
+.bl { background: var(--rdim); color: var(--red); }
+.bp { background: var(--ydim); color: var(--yellow); }
 
-  .card-value.green { color: var(--green); }
-  .card-value.red { color: var(--red); }
-  .card-value.yellow { color: var(--yellow); }
-  .card-value.blue { color: var(--blue); }
+/* CITY CARDS - 3 col always */
+.city-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+.cc { background: var(--s1); border: 1px solid var(--border); border-radius: var(--r); padding: 12px; position: relative; overflow: hidden; }
+.cc::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; }
+.cc.cp::before { background: var(--green); }
+.cc.cn::before { background: var(--red); }
+.cn-name { font-size: 9px; color: var(--muted); letter-spacing: 2px; text-transform: uppercase; margin-bottom: 5px; }
+.cn-pnl  { font-family: var(--display); font-weight: 800; font-size: 18px; }
+.cn-stat { font-size: 10px; color: var(--muted); margin-top: 3px; }
 
-  .card-sub {
-    font-size: 11px;
-    color: var(--muted);
-    margin-top: 6px;
-  }
+/* PRICE TABLE */
+.pi { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.pi:last-child { border-bottom: none; }
+.pq { font-size: 10px; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pv { display: flex; gap: 8px; align-items: center; font-size: 10px; flex-shrink: 0; }
+.popen { color: var(--muted); }
+.pcurr { font-weight: 700; }
+.pmv   { font-weight: 700; font-size: 10px; }
 
-  .section-title {
-    font-family: var(--font-display);
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--muted);
-    letter-spacing: 3px;
-    text-transform: uppercase;
-    margin-bottom: 12px;
-    margin-top: 8px;
-  }
+/* EMPTY / LOADING */
+.empty { padding: 24px; text-align: center; color: var(--muted); font-size: 11px; letter-spacing: 1px; }
+.loading { padding: 60px 20px; text-align: center; color: var(--muted); font-size: 11px; letter-spacing: 2px; }
 
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 12px;
-  }
-
-  th {
-    text-align: left;
-    font-size: 10px;
-    color: var(--muted);
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--border);
-  }
-
-  td {
-    padding: 10px 12px;
-    border-bottom: 1px solid #1a1a26;
-    vertical-align: middle;
-  }
-
-  tr:last-child td { border-bottom: none; }
-  tr:hover td { background: var(--surface2); }
-
-  .badge {
-    display: inline-block;
-    padding: 3px 8px;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-  }
-
-  .badge-win { background: var(--green-dim); color: var(--green); }
-  .badge-lose { background: var(--red-dim); color: var(--red); }
-  .badge-pending { background: var(--yellow-dim); color: var(--yellow); }
-
-  .pnl-pos { color: var(--green); font-weight: 700; }
-  .pnl-neg { color: var(--red); font-weight: 700; }
-
-  .edge-bar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .edge-fill {
-    height: 4px;
-    background: var(--green);
-    min-width: 4px;
-    max-width: 100px;
-  }
-
-  .question-text {
-    max-width: 280px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--text);
-  }
-
-  .price-row { display: flex; align-items: center; gap: 8px; }
-  .price-arrow { font-size: 10px; }
-  .price-up { color: var(--red); }
-  .price-down { color: var(--green); }
-
-  .loading {
-    text-align: center;
-    padding: 60px;
-    color: var(--muted);
-    font-size: 12px;
-    letter-spacing: 2px;
-  }
-
-  .error { color: var(--red); padding: 20px; font-size: 12px; }
-
-  .city-tag {
-    font-size: 10px;
-    padding: 2px 6px;
-    background: var(--surface2);
-    color: var(--blue);
-    border: 1px solid var(--border);
-  }
-
-  .scenario-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-    margin-top: 8px;
-  }
-
-  .scenario {
-    padding: 12px;
-    background: var(--surface2);
-    border: 1px solid var(--border);
-  }
-
-  .scenario-label { font-size: 10px; color: var(--muted); letter-spacing: 1px; margin-bottom: 4px; }
-  .scenario-value { font-size: 18px; font-family: var(--font-display); font-weight: 700; }
-
-  .last-updated { font-size: 10px; color: var(--muted); margin-left: auto; }
+/* DESKTOP */
+@media (min-width: 600px) {
+  .page { padding: 20px; }
+  .hdr  { padding: 16px 20px; }
+  .sub  { display: block; }
+  .logo { font-size: 24px; }
+  .kpi-grid { grid-template-columns: repeat(4, 1fr); }
+  .kv { font-size: 30px; }
+}
+@media (min-width: 900px) {
+  .kv { font-size: 34px; }
+  .tq { font-size: 12px; }
+}
 </style>
 </head>
 <body>
 
-<div class="header">
+<div class="hdr">
   <div class="logo">PolyEdge</div>
-  <div class="tagline">Weather Trading Bot</div>
-  <div class="last-updated" id="lastUpdated">—</div>
-  <button class="refresh-btn" onclick="loadData()">↻ REFRESH</button>
+  <div class="sub">WEATHER TRADING BOT</div>
+  <div class="ts" id="ts">—</div>
+  <button class="rbtn" onclick="load()">↻ REFRESH</button>
 </div>
 
-<div id="content"><div class="loading">LOADING DASHBOARD...</div></div>
+<div class="page" id="root">
+  <div class="loading">◌ LOADING...</div>
+</div>
 
 <script>
 const API = 'https://pmbot-production.up.railway.app';
 
-async function loadData() {
-  document.getElementById('content').innerHTML = '<div class="loading">FETCHING DATA...</div>';
+const fmt  = n => n >= 0 ? '+$'+n.toFixed(2) : '-$'+Math.abs(n).toFixed(2);
+const pct  = n => (n*100).toFixed(1)+'%';
+const city3 = c => c==='Atlanta'?'ATL':c==='NYC'||c==='New York City'?'NYC':'DAL';
+const cityC  = c => c==='Atlanta'?'atl':c==='NYC'||c==='New York City'?'nyc':'dal';
+const shortQ = q => q ? q.replace('Will the highest temperature in ','').replace(' be ',' ').replace(/\?$/,'') : '—';
+
+async function load() {
   try {
-    const data = await fetch(API + '/dashboard').then(r => r.json());
-    if (data.status === 'error') throw new Error(data.message);
-    render(data);
-    document.getElementById('lastUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+    const d = await fetch(API+'/dashboard').then(r=>r.json());
+    if (d.status==='error') throw new Error(d.message);
+    render(d);
+    document.getElementById('ts').textContent = 'Updated '+new Date().toLocaleTimeString();
   } catch(e) {
-    document.getElementById('content').innerHTML = `<div class="error">Error: ${e.message}</div>`;
+    document.getElementById('root').innerHTML = `<div class="empty">Error: ${e.message}</div>`;
   }
 }
 
-function fmt(n) { return n >= 0 ? '+$' + n.toFixed(2) : '-$' + Math.abs(n).toFixed(2); }
-function fmtPct(n) { return (n * 100).toFixed(1) + '%'; }
-function shortQ(q) { return q ? q.replace('Will the highest temperature in ', '').replace(' be ', ' ') : '—'; }
-
 function render(d) {
   const s = d.summary;
-  const resolved = s.wins + s.losses;
+  const pendPay = d.pending.reduce((a,t)=>a+(t.potential_profit||0),0);
+  let h = '';
 
-  document.getElementById('content').innerHTML = `
-
-    <!-- KPI CARDS -->
-    <div class="grid-4">
-      <div class="card ${s.total_pnl >= 0 ? 'green' : 'red'}">
-        <div class="card-label">Total P&L</div>
-        <div class="card-value ${s.total_pnl >= 0 ? 'green' : 'red'}">${fmt(s.total_pnl)}</div>
-        <div class="card-sub">${s.total} clean trades</div>
-      </div>
-      <div class="card yellow">
-        <div class="card-label">Win Rate</div>
-        <div class="card-value yellow">${s.win_rate}%</div>
-        <div class="card-sub">${s.wins}W / ${s.losses}L / ${s.pending}P</div>
-      </div>
-      <div class="card blue">
-        <div class="card-label">Pending</div>
-        <div class="card-value blue">$${s.pending_invested.toFixed(0)}</div>
-        <div class="card-sub">${s.pending} active bets</div>
-      </div>
-      <div class="card green">
-        <div class="card-label">If All Pending Win</div>
-        <div class="card-value green">${fmt(s.potential_if_all_win)}</div>
-        <div class="card-sub">Worst case: ${fmt(s.worst_case)}</div>
-      </div>
+  // KPIs
+  h += `<div class="kpi-grid">
+    <div class="kpi ${s.total_pnl>=0?'g':'r'}">
+      <div class="kl">Total P&L</div>
+      <div class="kv ${s.total_pnl>=0?'g':'r'}">${fmt(s.total_pnl)}</div>
+      <div class="ks">${s.total} trades</div>
     </div>
-
-    <!-- PENDING BETS -->
-    <div class="section-title">⏳ Active Bets</div>
-    <div class="card" style="margin-bottom:24px">
-      ${d.pending.length === 0 ? '<div style="color:var(--muted);padding:20px;font-size:12px">No pending bets</div>' : `
-      <table>
-        <thead>
-          <tr>
-            <th>City</th>
-            <th>Market</th>
-            <th>Target</th>
-            <th>Entry</th>
-            <th>Bet</th>
-            <th>Edge</th>
-            <th>Potential Win</th>
-            <th>Days Out</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${d.pending.map(t => `
-            <tr>
-              <td><span class="city-tag">${t.city}</span></td>
-              <td><span class="question-text">${shortQ(t.question)}</span></td>
-              <td>${t.target_date}</td>
-              <td>${t.entry_price_c ? t.entry_price_c.toFixed(1) + '¢' : '—'}</td>
-              <td>$${t.bet_size}</td>
-              <td>
-                <div class="edge-bar">
-                  <div class="edge-fill" style="width:${Math.min((t.edge||0)*200,100)}px"></div>
-                  <span style="color:var(--green)">${t.edge ? fmtPct(t.edge) : '—'}</span>
-                </div>
-              </td>
-              <td class="pnl-pos">+$${(t.potential_profit||0).toFixed(2)}</td>
-              <td style="color:var(--muted)">${t.days_out}d</td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>`}
+    <div class="kpi y">
+      <div class="kl">Win Rate</div>
+      <div class="kv y">${s.win_rate}%</div>
+      <div class="ks">${s.wins}W / ${s.losses}L / ${s.pending}P</div>
     </div>
+    <div class="kpi b">
+      <div class="kl">At Risk</div>
+      <div class="kv b">$${(s.pending_invested||0).toFixed(0)}</div>
+      <div class="ks">${s.pending} active bets</div>
+    </div>
+    <div class="kpi g">
+      <div class="kl">If All Win</div>
+      <div class="kv g">${fmt(s.potential_if_all_win||0)}</div>
+      <div class="ks">Worst: ${fmt(s.worst_case||0)}</div>
+    </div>
+  </div>`;
 
-    <!-- SCENARIOS -->
-    <div class="grid-2" style="margin-bottom:24px">
-      <div class="card green">
-        <div class="card-label">Best Case (All Win)</div>
-        <div class="scenario-grid">
-          <div class="scenario">
-            <div class="scenario-label">Total P&L</div>
-            <div class="scenario-value pnl-pos">${fmt(s.potential_if_all_win)}</div>
+  // Scenarios
+  h += `<div class="sc-row">
+    <div class="sc-box">
+      <div class="sc-lbl">🟢 Best Case</div>
+      <div class="sc-val pos">${fmt(s.potential_if_all_win||0)}</div>
+      <div class="ks" style="margin-top:4px">Pending: +$${pendPay.toFixed(2)}</div>
+    </div>
+    <div class="sc-box">
+      <div class="sc-lbl">🔴 Worst Case</div>
+      <div class="sc-val neg">${fmt(s.worst_case||0)}</div>
+      <div class="ks" style="margin-top:4px">Risk: -$${(s.pending_invested||0).toFixed(2)}</div>
+    </div>
+  </div>`;
+
+  // Active bets
+  h += `<div class="sec">⏳ Active Bets</div><div class="card">`;
+  if (!d.pending.length) {
+    h += `<div class="empty">No active bets</div>`;
+  } else {
+    d.pending.forEach(t => {
+      const isNeg = (t.edge||0) < 0;
+      const ew = Math.min(Math.abs(t.edge||0)*200, 44);
+      h += `<div class="tr">
+        <div class="ctag ${cityC(t.city)}">${city3(t.city)}</div>
+        <div class="tm">
+          <div class="tq">${shortQ(t.question)}</div>
+          <div class="tmeta">
+            <span>${t.target_date}</span>
+            <span>${t.entry_price_c?t.entry_price_c.toFixed(1)+'¢':'—'}</span>
+            <span>$${t.bet_size}</span>
+            <span>${t.days_out}d</span>
           </div>
-          <div class="scenario">
-            <div class="scenario-label">Pending Payout</div>
-            <div class="scenario-value pnl-pos">+$${d.pending.reduce((a,t) => a + (t.potential_profit||0), 0).toFixed(2)}</div>
+          <div class="ebar">
+            <div class="ebg"><div class="ef ${isNeg?'neg':''}" style="width:${ew}px"></div></div>
+            <span class="ev ${isNeg?'neg':'pos'}">${t.edge?pct(t.edge):'—'}</span>
           </div>
         </div>
-      </div>
-      <div class="card red">
-        <div class="card-label">Worst Case (All Lose)</div>
-        <div class="scenario-grid">
-          <div class="scenario">
-            <div class="scenario-label">Total P&L</div>
-            <div class="scenario-value pnl-neg">${fmt(s.worst_case)}</div>
-          </div>
-          <div class="scenario">
-            <div class="scenario-label">At Risk</div>
-            <div class="scenario-value pnl-neg">-$${s.pending_invested.toFixed(2)}</div>
+        <div class="tr-right">
+          <div class="tpnl pos">+$${(t.potential_profit||0).toFixed(2)}</div>
+          <div class="bdg bp">PENDING</div>
+        </div>
+      </div>`;
+    });
+  }
+  h += `</div>`;
+
+  // Recent results
+  h += `<div class="sec">🏁 Recent Results</div><div class="card">`;
+  if (!d.recent_resolved.length) {
+    h += `<div class="empty">No resolved trades yet</div>`;
+  } else {
+    d.recent_resolved.forEach(t => {
+      const win = t.outcome === 'Yes';
+      h += `<div class="tr">
+        <div class="ctag ${cityC(t.city)}">${city3(t.city)}</div>
+        <div class="tm">
+          <div class="tq">${shortQ(t.question)}</div>
+          <div class="tmeta">
+            <span>${t.target_date}</span>
+            <span>${t.entry_price_c?t.entry_price_c.toFixed(1)+'¢':'—'}</span>
+            <span>$${t.bet_size}</span>
+            ${t.wu_actual?`<span>WU: ${t.wu_actual}°F</span>`:''}
           </div>
         </div>
-      </div>
-    </div>
+        <div class="tr-right">
+          <div class="tpnl ${win?'pos':'neg'}">${t.pnl?fmt(t.pnl):'—'}</div>
+          <div class="bdg ${win?'bw':'bl'}">${win?'✓ WIN':'✗ LOSS'}</div>
+        </div>
+      </div>`;
+    });
+  }
+  h += `</div>`;
 
-    <!-- PRICE MOVEMENT -->
-    ${d.price_movement && d.price_movement.length > 0 ? `
-    <div class="section-title">📈 Price Movement (Last 48h)</div>
-    <div class="card" style="margin-bottom:24px">
-      <table>
-        <thead>
-          <tr>
-            <th>City</th>
-            <th>Date</th>
-            <th>Range</th>
-            <th>Open</th>
-            <th>Current</th>
-            <th>Movement</th>
-            <th>Min</th>
-            <th>Max</th>
-            <th>Scans</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${d.price_movement.map(p => {
-            const mv = p.current_price - p.open_price;
-            const q = p.question ? p.question.replace('Will the highest temperature in ','').replace(/ on .*/,'') : '—';
-            return `<tr>
-              <td><span class="city-tag">${p.city}</span></td>
-              <td>${p.target_date}</td>
-              <td style="font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${q}</td>
-              <td>${p.open_price ? p.open_price.toFixed(1)+'¢' : '—'}</td>
-              <td>${p.current_price ? p.current_price.toFixed(1)+'¢' : '—'}</td>
-              <td class="${mv > 0 ? 'price-up' : mv < 0 ? 'pnl-pos' : ''}">${mv > 0 ? '▲' : mv < 0 ? '▼' : '—'} ${Math.abs(mv).toFixed(1)}¢</td>
-              <td style="color:var(--green)">${p.min_price ? p.min_price.toFixed(1)+'¢' : '—'}</td>
-              <td style="color:var(--red)">${p.max_price ? p.max_price.toFixed(1)+'¢' : '—'}</td>
-              <td style="color:var(--muted)">${p.scans}</td>
-            </tr>`;
-          }).join('')}
-        </tbody>
-      </table>
-    </div>` : ''}
+  // Price movement
+  if (d.price_movement && d.price_movement.length) {
+    h += `<div class="sec">📈 Price Movement (48h)</div><div class="card">`;
+    d.price_movement.slice(0,12).forEach(p => {
+      const mv = (p.current_price||0)-(p.open_price||0);
+      const q = (p.question||'').replace('Will the highest temperature in ','').replace(/ on .*/,'');
+      h += `<div class="pi">
+        <div class="ctag ${cityC(p.city)}">${city3(p.city)}</div>
+        <div class="pq">${q}</div>
+        <div class="pv">
+          <span class="popen">${p.open_price?p.open_price.toFixed(1)+'¢':'—'}</span>
+          <span>→</span>
+          <span class="pcurr">${p.current_price?p.current_price.toFixed(1)+'¢':'—'}</span>
+          <span class="pmv ${mv>0?'neg':mv<0?'pos':'neu'}">${mv>=0?'▲':'▼'}${Math.abs(mv).toFixed(1)}¢</span>
+        </div>
+      </div>`;
+    });
+    h += `</div>`;
+  }
 
-    <!-- RECENT RESOLVED -->
-    <div class="section-title">🏁 Recent Results</div>
-    <div class="card" style="margin-bottom:24px">
-      ${d.recent_resolved.length === 0 ? '<div style="color:var(--muted);padding:20px;font-size:12px">No resolved trades yet</div>' : `
-      <table>
-        <thead>
-          <tr>
-            <th>City</th>
-            <th>Market</th>
-            <th>Entry</th>
-            <th>Bet</th>
-            <th>Result</th>
-            <th>P&L</th>
-            <th>Actual Temp</th>
-            <th>Resolved</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${d.recent_resolved.map(t => `
-            <tr>
-              <td><span class="city-tag">${t.city}</span></td>
-              <td><span class="question-text">${shortQ(t.question)}</span></td>
-              <td>${t.entry_price_c ? t.entry_price_c.toFixed(1) + '¢' : '—'}</td>
-              <td>$${t.bet_size}</td>
-              <td><span class="badge badge-${t.outcome === 'Yes' ? 'win' : 'lose'}">${t.outcome === 'Yes' ? '✓ WIN' : '✗ LOSS'}</span></td>
-              <td class="${(t.pnl||0) >= 0 ? 'pnl-pos' : 'pnl-neg'}">${t.pnl ? fmt(t.pnl) : '—'}</td>
-              <td style="color:var(--yellow)">${t.wu_actual ? t.wu_actual + '°' : '—'}</td>
-              <td style="color:var(--muted);font-size:10px">${t.resolved_at ? t.resolved_at.split(' ').slice(0,2).join(' ') : '—'}</td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>`}
-    </div>
+  // By city
+  h += `<div class="sec">🏙️ By City</div><div class="city-grid">`;
+  d.by_city.forEach(c => {
+    const wr = c.bets>0?Math.round(c.wins/c.bets*100):0;
+    h += `<div class="cc ${c.pnl>=0?'cp':'cn'}">
+      <div class="cn-name">${c.city}</div>
+      <div class="cn-pnl ${c.pnl>=0?'pos':'neg'}">${fmt(c.pnl)}</div>
+      <div class="cn-stat">${c.bets} bets · ${wr}% win</div>
+      <div class="cn-stat">edge ${pct(c.avg_edge)}</div>
+    </div>`;
+  });
+  h += `</div>`;
 
-    <!-- BY CITY -->
-    <div class="section-title">🏙️ Performance by City</div>
-    <div class="grid-3">
-      ${d.by_city.map(c => {
-        const wr = c.bets > 0 ? Math.round(c.wins/c.bets*100) : 0;
-        return `<div class="card ${c.pnl >= 0 ? 'green' : 'red'}">
-          <div class="card-label">${c.city}</div>
-          <div class="card-value ${c.pnl >= 0 ? 'green' : 'red'}">${fmt(c.pnl)}</div>
-          <div class="card-sub">${c.bets} bets · ${wr}% win · avg edge ${fmtPct(c.avg_edge)}</div>
-        </div>`;
-      }).join('')}
-    </div>
-  `;
+  document.getElementById('root').innerHTML = h;
 }
 
-loadData();
+load();
 </script>
 </body>
 </html>
