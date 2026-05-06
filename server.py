@@ -2453,6 +2453,46 @@ def weekly_summary():
         return {"status": "error", "message": str(e)}
 
 
+
+@app.get("/migrate-dedup")
+def migrate_dedup():
+    """
+    One-time migration: add unique constraint on market_id
+    so ON CONFLICT (market_id) works correctly.
+    Safe to run multiple times.
+    """
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        # Drop old constraint if exists, add new one on market_id alone
+        c.execute("""
+            DO $$
+            BEGIN
+                -- Remove old unique constraint if it exists
+                IF EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'paper_trades_market_id_trade_date_key'
+                ) THEN
+                    ALTER TABLE paper_trades
+                    DROP CONSTRAINT paper_trades_market_id_trade_date_key;
+                END IF;
+
+                -- Add unique constraint on market_id alone
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'paper_trades_market_id_key'
+                ) THEN
+                    ALTER TABLE paper_trades
+                    ADD CONSTRAINT paper_trades_market_id_key UNIQUE (market_id);
+                END IF;
+            END$$;
+        """)
+        conn.commit()
+        conn.close()
+        return {"status": "✅ done", "message": "Unique constraint on market_id applied — no more duplicate bets"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.get("/run-tests")
 def run_tests():
     """Run full variable test suite. Returns pass/fail for every assumption."""
