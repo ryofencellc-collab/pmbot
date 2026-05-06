@@ -61,9 +61,11 @@ CITIES_LOGGING = {
 }
 
 # Trading parameters
-MIN_EDGE    = 0.20   # 20% minimum edge — conservative
+MIN_EDGE    = 0.20   # 20% global minimum — hard floor, never bet below this
+MIN_EDGE_NYC = 0.25  # NYC needs higher threshold — only 62% accurate
+MIN_EDGE_MULTI = 0.0 # Per-range floor in multi-range (0 allows outer ranges, but neg blocked)
 MIN_PRICE_C = 0.5    # lower floor for multi-range (adjacent ranges can be cheap)
-MAX_PRICE_C = 60.0   # higher ceiling for multi-range center range
+MAX_PRICE_C = 40.0   # max price per range — above 40¢ center range math doesn't work
 BET_HUGE    = 50.0   # edge >= 35%
 BET_BIG     = 25.0   # edge >= 25%
 BET_SMALL   = 10.0   # edge >= 20%
@@ -268,9 +270,21 @@ def select_multi_ranges(corrected, unit, markets, city):
         yes_price = float(prices[0]) if prices else 0.0
         price_c   = round(yes_price * 100, 2)
 
-        # Skip ranges priced above 60¢ (already heavily priced in)
-        if price_c > 60.0 or price_c < 0.5:
+        # Skip ranges outside price bounds
+        if price_c > MAX_PRICE_C or price_c < 0.5:
             continue
+
+        # FIX: Skip negative edge ranges — market correctly priced, no edge
+        lo_r, hi_r, _ = parse_range(question, unit)
+        if lo_r is not None:
+            acc = CITY_ACCURACY.get(city, {})
+            from_acc = lambda k: acc.get(k, 0)
+            tp_check = true_probability(lo_r, hi_r,
+                (corrected if 'corrected' in dir() else lo_r),
+                from_acc('bias'), from_acc('std'))
+            calc_edge = tp_check - yes_price
+            if calc_edge < 0:
+                continue  # negative edge — market knows better, skip
 
         total_cost_c += price_c
         selected.append({
@@ -324,6 +338,8 @@ def log_prices(city, target, days_out, fc, markets_data):
         acc = CITY_ACCURACY.get(city, {})
         bias = acc.get("bias", 0)
         corrected = round((fc.get("consensus") or 0) - bias, 2)
+        # WU records temps in WHOLE DEGREES — note rounded value for reference
+        corrected_wu = round(corrected)  # what WU would record
 
         for m in markets_data:
             if not m.get("acceptingOrders", False):
@@ -391,7 +407,7 @@ def place_trade(city, target, days_out, fc, market_id, question, price_c, ed, be
                  spread, confidence, unit, bet_size,
                  true_prob, market_prob, edge, bias_used, std_used, trusted_city)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            ON CONFLICT (market_id, trade_date) DO NOTHING
+            ON CONFLICT (market_id) DO NOTHING
             RETURNING id
         """, (
             est_str(), date.today().isoformat(), market_id, city, question,
@@ -564,6 +580,10 @@ def run_scan():
                          f"edge={edge:+.1%} corrected={corrected:.1f}{unit} dir={ed['direction']}",
                          market_id=mid, question=question, price_c=price_c)
 
+                # Never bet a range with negative edge
+                if edge < 0:
+                    continue
+
                 if best_edge is None or edge > best_edge:
                     best_edge = edge
                     best_m    = dict(m)
@@ -639,10 +659,12 @@ def run_scan():
             if best_edge is None:
                 continue
 
-            if best_edge < MIN_EDGE:
+            # Per-city edge minimum — NYC needs higher bar (62% accuracy)
+            city_min_edge = MIN_EDGE_NYC if city == "NYC" else MIN_EDGE
+            if best_edge < city_min_edge:
                 counts["SKIP_NOEDGE"] += 1
                 log_scan(city, target, days_out, fc, "SKIP_NOEDGE",
-                         f"Best edge {best_edge:+.1%} < {MIN_EDGE:.0%} minimum",
+                         f"Best edge {best_edge:+.1%} < {city_min_edge:.0%} minimum ({city})",
                          market_id=best_m["id"],
                          question=best_m["_question"],
                          price_c=best_m["_price_c"])
