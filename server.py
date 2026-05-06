@@ -2457,18 +2457,43 @@ def weekly_summary():
 @app.get("/migrate-dedup")
 def migrate_dedup():
     """
-    One-time migration: add unique constraint on market_id
-    so ON CONFLICT (market_id) works correctly.
+    One-time migration: deduplicate market_ids and add unique constraint.
+    Keeps the BEST trade per market_id (highest edge, or most recent).
     Safe to run multiple times.
     """
     try:
         conn = get_conn()
         c = conn.cursor()
-        # Drop old constraint if exists, add new one on market_id alone
+
+        # Step 1: Find all duplicate market_ids
+        c.execute("""
+            SELECT market_id, COUNT(*) as cnt
+            FROM paper_trades
+            GROUP BY market_id
+            HAVING COUNT(*) > 1
+        """)
+        dupes = c.fetchall()
+        removed = 0
+
+        # Step 2: For each duplicate, keep the one with highest edge (or highest id)
+        for row in dupes:
+            mid = row["market_id"]
+            c.execute("""
+                DELETE FROM paper_trades
+                WHERE market_id = %s
+                AND id NOT IN (
+                    SELECT id FROM paper_trades
+                    WHERE market_id = %s
+                    ORDER BY COALESCE(edge, 0) DESC, id DESC
+                    LIMIT 1
+                )
+            """, (mid, mid))
+            removed += c.rowcount
+
+        # Step 3: Drop old constraint if exists
         c.execute("""
             DO $$
             BEGIN
-                -- Remove old unique constraint if it exists
                 IF EXISTS (
                     SELECT 1 FROM pg_constraint
                     WHERE conname = 'paper_trades_market_id_trade_date_key'
@@ -2476,8 +2501,13 @@ def migrate_dedup():
                     ALTER TABLE paper_trades
                     DROP CONSTRAINT paper_trades_market_id_trade_date_key;
                 END IF;
+            END$$;
+        """)
 
-                -- Add unique constraint on market_id alone
+        # Step 4: Add unique constraint on market_id alone
+        c.execute("""
+            DO $$
+            BEGIN
                 IF NOT EXISTS (
                     SELECT 1 FROM pg_constraint
                     WHERE conname = 'paper_trades_market_id_key'
@@ -2487,9 +2517,15 @@ def migrate_dedup():
                 END IF;
             END$$;
         """)
+
         conn.commit()
         conn.close()
-        return {"status": "✅ done", "message": "Unique constraint on market_id applied — no more duplicate bets"}
+        return {
+            "status": "✅ done",
+            "duplicates_found": len(dupes),
+            "rows_removed": removed,
+            "message": "Duplicates cleaned, unique constraint on market_id applied"
+        }
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
