@@ -820,6 +820,9 @@ def test_only_proven_cities():
     for city, acc in CITY_ACCURACY.items():
         if acc["std"] >= 3.2:
             problems.append(f"{city}: std={acc['std']} >= 3.2 (too noisy for multi-range)")
+        # NYC needs higher edge minimum due to lower accuracy
+        if city == "NYC" and acc.get("std", 0) > 3.0:
+            problems.append(f"NYC std={acc['std']} too high — MIN_EDGE_NYC should apply")
         if acc["days"] < 20:
             problems.append(f"{city}: only {acc['days']} days of data (need 20+)")
 
