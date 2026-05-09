@@ -40,9 +40,9 @@ CITY_ACCURACY = {
     # Source: /backtest/bias-corrected — 90 days Feb 1 to May 1 2026
     # DO NOT add cities without 20+ days of real accuracy data
     # ── PROVEN (tradeable now) ──────────────────────────────────
-    "Atlanta": {"bias": 1.17, "std": 1.70, "days": 90, "lat": 33.749, "lon": -84.388, "unit": "F", "slug": "atlanta"},  # 92.2% ✅
-    "Dallas":  {"bias": 1.37, "std": 1.87, "days": 90, "lat": 32.776, "lon": -96.797, "unit": "F", "slug": "dallas"},   # 81.1% ✅
-    "NYC":     {"bias": 1.13, "std": 3.10, "days": 90, "lat": 40.713, "lon": -74.006, "unit": "F", "slug": "nyc"},      # 72.2% ⚠️
+    "Atlanta": {"bias": 1.17, "std": 1.70, "days": 90, "lat": 33.749, "lon": -84.388, "unit": "F", "slug": "atlanta"},  # 76.7% ✅ BET
+    "Dallas":  {"bias": 1.37, "std": 1.87, "days": 90, "lat": 32.776, "lon": -96.797, "unit": "F", "slug": "dallas"},   # 65.5% ⚠️ HIGH EDGE ONLY
+    "NYC":     {"bias": 1.13, "std": 3.10, "days": 90, "lat": 40.713, "lon": -74.006, "unit": "F", "slug": "nyc"},      # 53.3% ❌ PAUSED — 4 big misses in a row
     # ── LOGGING (collecting data, not yet tradeable) ────────────
     # These cities have Polymarket markets. Forecast logger is now
     # tracking them. Add to trading once 20+ days of data collected.
@@ -61,11 +61,17 @@ CITIES_LOGGING = {
 }
 
 # Trading parameters
-MIN_EDGE    = 0.20   # 20% global minimum — hard floor, never bet below this
-MIN_EDGE_NYC = 0.25  # NYC needs higher threshold — only 62% accurate
-MIN_EDGE_MULTI = 0.0 # Per-range floor in multi-range (0 allows outer ranges, but neg blocked)
-MIN_PRICE_C = 0.5    # lower floor for multi-range (adjacent ranges can be cheap)
-MAX_PRICE_C = 40.0   # max price per range — above 40¢ center range math doesn't work
+MIN_EDGE     = 0.20   # 20% global minimum — hard floor, never bet below this
+MIN_EDGE_NYC = 0.25   # NYC needs higher threshold — 53% accuracy, pause until recovers
+MIN_EDGE_DAL = 0.25   # Dallas needs higher threshold — 65.5% accuracy, needs big edge
+MIN_EDGE_MULTI = 0.0  # Per-range floor in multi-range (neg edge blocked separately)
+MIN_PRICE_C  = 0.5    # lower floor for multi-range
+MAX_PRICE_C  = 40.0   # max price per range — above 40¢ math doesn't work
+
+# Forecast cache — avoid blowing Open-Meteo API limit
+# Cache forecast for each city+date, refresh max once per hour
+_FORECAST_CACHE = {}   # key: (city, date_str) → {consensus, gfs, ukmo, mf, cached_at}
+_CACHE_TTL_SEC  = 3600 # 1 hour
 BET_HUGE    = 50.0   # edge >= 35%
 BET_BIG     = 25.0   # edge >= 25%
 BET_SMALL   = 10.0   # edge >= 20%
@@ -659,8 +665,13 @@ def run_scan():
             if best_edge is None:
                 continue
 
-            # Per-city edge minimum — NYC needs higher bar (62% accuracy)
-            city_min_edge = MIN_EDGE_NYC if city == "NYC" else MIN_EDGE
+            # Per-city edge minimum based on forecast accuracy
+            if city == "NYC":
+                city_min_edge = MIN_EDGE_NYC   # 53% accuracy — needs 25%+ edge
+            elif city == "Dallas":
+                city_min_edge = MIN_EDGE_DAL   # 65.5% accuracy — needs 25%+ edge
+            else:
+                city_min_edge = MIN_EDGE       # Atlanta 76.7% — 20% sufficient
             if best_edge < city_min_edge:
                 counts["SKIP_NOEDGE"] += 1
                 log_scan(city, target, days_out, fc, "SKIP_NOEDGE",
