@@ -433,12 +433,23 @@ def place_trade(city, target, days_out, fc, market_id, question, price_c, ed, be
         return None
 
 
-def bets_today(city):
+def bets_today(city, target_date=None):
+    """
+    Count bets for this city.
+    If target_date given: count bets for that specific target date (prevents
+    betting same city+date twice, but allows betting city on different dates).
+    If no target_date: count all bets placed today (legacy behavior).
+    """
     try:
         conn = get_conn()
         c = conn.cursor()
-        c.execute("SELECT COUNT(*) as n FROM paper_trades WHERE city=%s AND trade_date=%s",
-                  (city, date.today().isoformat()))
+        if target_date:
+            # Per target_date limit — allows betting Atlanta May10 AND May11
+            c.execute("SELECT COUNT(*) as n FROM paper_trades WHERE city=%s AND target_date=%s",
+                      (city, str(target_date)))
+        else:
+            c.execute("SELECT COUNT(*) as n FROM paper_trades WHERE city=%s AND trade_date=%s",
+                      (city, date.today().isoformat()))
         n = c.fetchone()["n"]
         conn.close()
         return n
@@ -507,9 +518,12 @@ def run_scan():
                          f"Spread={spread:.1f}° > {SPREAD_LIMIT}°")
                 continue
 
-            # Daily bet limit
-            if bets_today(city) >= MAX_BETS_PER_CITY:
+            # Per target_date limit — max 1 bet per city per target date
+            # (allows betting Atlanta May10 AND May11 on the same day)
+            if bets_today(city, target) >= MAX_BETS_PER_CITY:
                 counts["SKIP_LIMIT"] += 1
+                log_scan(city, target, days_out, fc, "SKIP_LIMIT",
+                         f"Already have {MAX_BETS_PER_CITY} bet(s) for {city} on {target}")
                 continue
 
             # Get markets
