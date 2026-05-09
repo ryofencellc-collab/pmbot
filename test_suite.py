@@ -820,8 +820,8 @@ def test_only_proven_cities():
     for city, acc in CITY_ACCURACY.items():
         if acc["std"] >= 3.2:
             problems.append(f"{city}: std={acc['std']} >= 3.2 (too noisy for multi-range)")
-        # NYC has std=3.1 but is handled by MIN_EDGE_NYC=0.25 — not a blocker
-        # Only flag NYC if std >= 3.2 (same threshold as other cities)
+        # NYC and Dallas require 25% edge (lower accuracy cities)
+        # std=3.1 for NYC is handled by MIN_EDGE_NYC — not a blocker here
         if acc["days"] < 20:
             problems.append(f"{city}: only {acc['days']} days of data (need 20+)")
 
