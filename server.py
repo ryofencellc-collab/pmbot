@@ -153,8 +153,8 @@ def run_scheduler():
                 except Exception as e:
                     print(f"[SCHEDULER] Morning error: {e}")
 
-        # Every 6 hours: log all 3 model forecasts + rebuild city cards cache
-        if minute < 5 and hour in [0, 6, 12, 18]:
+        # Once per day at 7 AM UTC: log forecasts (rate limit protection)
+        if minute < 5 and hour == 7:
             try:
                 from forecast_logger import log_all_forecasts
                 log_all_forecasts()
