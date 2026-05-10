@@ -12,27 +12,18 @@ from data.database import get_conn, init_db
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 WU_API_KEY = "e1f10a1e78da46f5b10a1e78da96f525"
 
-# APPROVED CITIES ONLY — confirmed positive ROI from 30-day real data backtest
+# Only cities we actively trade — reduces API calls dramatically
+# 3 cities x 38 dates = 114 calls vs 8 cities = 304 calls
 CITY_SLUGS = {
-    "London":    "london",
-    "NYC":       "nyc",
-    "Toronto":   "toronto",
-    "Dallas":    "dallas",
     "Atlanta":   "atlanta",
-    "Seattle":   "seattle",
-    "Paris":     "paris",
-    "Sao Paulo": "sao-paulo",
+    "Dallas":    "dallas",
+    "NYC":       "nyc",
 }
 
 WU_STATIONS = {
-    "London":    {"station": "EGLC", "country": "GB", "unit": "C"},
-    "NYC":       {"station": "KLGA", "country": "US", "unit": "F"},
-    "Toronto":   {"station": "CYYZ", "country": "CA", "unit": "C"},
-    "Dallas":    {"station": "KDAL", "country": "US", "unit": "F"},
     "Atlanta":   {"station": "KATL", "country": "US", "unit": "F"},
-    "Seattle":   {"station": "KSEA", "country": "US", "unit": "F"},
-    "Paris":     {"station": "LFPG", "country": "FR", "unit": "C"},
-    "Sao Paulo": {"station": "SBGR", "country": "BR", "unit": "C"},
+    "Dallas":    {"station": "KDAL", "country": "US", "unit": "F"},
+    "NYC":       {"station": "KLGA", "country": "US", "unit": "F"},
 }
 
 
@@ -295,7 +286,14 @@ def fetch_wu_temps(days_back=30):
 def fetch_price_histories():
     conn = get_conn()
     c    = conn.cursor()
-    c.execute("SELECT id FROM markets WHERE outcome IS NOT NULL ORDER BY resolved_at DESC")
+    # Only fetch price history for markets resolved in last 90 days
+    # Prevents fetching 4000+ historical markets every night
+    cutoff = int((datetime.now(timezone.utc) - timedelta(days=90)).timestamp())
+    c.execute("""SELECT id FROM markets 
+                 WHERE outcome IS NOT NULL 
+                 AND resolved_at > %s 
+                 ORDER BY resolved_at DESC 
+                 LIMIT 500""", (cutoff,))
     market_ids = [r["id"] for r in c.fetchall()]
     conn.close()
 
@@ -372,7 +370,13 @@ def fetch_price_histories():
     return saved
 
 
-def run_full_ingest(days_back=30, days_ahead=7):
+def run_full_ingest(days_back=7, days_ahead=7):
+    """
+    Nightly ingest — reduced scope to protect API limits:
+    - 3 cities only (Atlanta, Dallas, NYC)
+    - 7 days back (not 30) for market data
+    - Price history capped at last 90 days, 500 markets max
+    """
     init_db()
     print(f"\n{'='*55}")
     print(f"  POLYEDGE INGEST — {len(CITY_SLUGS)} cities")
