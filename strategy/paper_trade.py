@@ -782,13 +782,21 @@ def check_outcomes():
 
             pnl = round(size * (1.0 / entry - 1.0), 2) if outcome == "Yes" else -size
 
+            # Fetch actual WU temperature for this city/date
+            wu_actual = None
+            try:
+                from forecast_logger import fetch_wu_temp
+                wu_actual = fetch_wu_temp(city, str(tdate)[:10])
+            except Exception:
+                pass
+
             conn2 = get_conn()
             c2 = conn2.cursor()
             c2.execute("""
                 UPDATE paper_trades
-                SET outcome=%s, resolved_at=%s, pnl=%s
+                SET outcome=%s, resolved_at=%s, pnl=%s, wu_actual=%s
                 WHERE id=%s
-            """, (outcome, est_str(), pnl, tid))
+            """, (outcome, est_str(), pnl, wu_actual, tid))
             conn2.commit()
             conn2.close()
 
