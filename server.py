@@ -2541,6 +2541,176 @@ def migrate_dedup():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+
+@app.get("/diagnostics")
+def diagnostics():
+    """
+    Full system health check — one URL, no guessing.
+    Shows scanner status, API health, ingest status, trade P&L, and recent scan decisions.
+    """
+    import time as _time
+    from datetime import datetime, timezone, timedelta
+    EST = timezone(timedelta(hours=-5))
+    now_est = datetime.now(EST)
+
+    out = {}
+
+    # ── 1. SCANNER STATUS ──
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT scanned_at, decision, city, reason FROM scan_log ORDER BY id DESC LIMIT 1")
+        last = c.fetchone()
+        c.execute("SELECT COUNT(*) as n FROM scan_log WHERE scanned_at >= %s",
+                  ((now_est - timedelta(hours=2)).strftime("%Y-%m-%d %I:%M %p EST"),))
+        recent_scans = c.fetchone()["n"]
+        conn.close()
+
+        if last:
+            last_scan_str = last["scanned_at"]
+            # Parse and compute age
+            try:
+                from datetime import datetime as dt
+                last_dt = dt.strptime(last_scan_str, "%Y-%m-%d %I:%M %p EST")
+                last_dt = last_dt.replace(tzinfo=EST)
+                age_min = int((now_est - last_dt).total_seconds() / 60)
+                scanner_ok = age_min < 75  # should scan every hour
+                out["scanner"] = {
+                    "status": "✅ OK" if scanner_ok else "❌ STALE",
+                    "last_scan": last_scan_str,
+                    "minutes_ago": age_min,
+                    "scans_last_2hrs": recent_scans,
+                    "last_decision": last["decision"],
+                    "last_city": last["city"],
+                }
+            except Exception as e:
+                out["scanner"] = {"status": "⚠️ parse error", "last_scan": last_scan_str, "error": str(e)}
+        else:
+            out["scanner"] = {"status": "❌ NO SCANS EVER", "last_scan": None}
+    except Exception as e:
+        out["scanner"] = {"status": "❌ DB ERROR", "error": str(e)}
+
+    # ── 2. OPEN-METEO API ──
+    try:
+        import requests as req
+        r = req.get("https://api.open-meteo.com/v1/forecast", params={
+            "latitude": 33.749, "longitude": -84.388,
+            "daily": "temperature_2m_max",
+            "temperature_unit": "fahrenheit",
+            "timezone": "America/New_York",
+            "forecast_days": 1,
+        }, timeout=8)
+        if r.status_code == 200 and "daily" in r.json():
+            out["open_meteo"] = {"status": "✅ OK", "test_temp": r.json()["daily"]["temperature_2m_max"][0]}
+        elif "limit exceeded" in r.text.lower():
+            out["open_meteo"] = {"status": "❌ RATE LIMITED", "resets": "tomorrow UTC midnight"}
+        else:
+            out["open_meteo"] = {"status": f"❌ HTTP {r.status_code}"}
+    except Exception as e:
+        out["open_meteo"] = {"status": "❌ ERROR", "error": str(e)}
+
+    # ── 3. POLYMARKET API ──
+    try:
+        import requests as req
+        r = req.get("https://gamma-api.polymarket.com/events",
+                    params={"slug": "highest-temperature-in-atlanta-on-may-11-2026"}, timeout=8)
+        if r.status_code == 200:
+            out["polymarket"] = {"status": "✅ OK"}
+        else:
+            out["polymarket"] = {"status": f"❌ HTTP {r.status_code}"}
+    except Exception as e:
+        out["polymarket"] = {"status": "❌ ERROR", "error": str(e)}
+
+    # ── 4. INGEST STATUS ──
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) as n FROM markets")
+        total_markets = c.fetchone()["n"]
+        c.execute("SELECT COUNT(*) as n FROM markets WHERE outcome IS NULL")
+        open_markets = c.fetchone()["n"]
+        c.execute("SELECT COUNT(*) as n FROM price_snapshots")
+        snapshots = c.fetchone()["n"]
+        c.execute("SELECT COUNT(*) as n FROM wu_temps")
+        wu_rows = c.fetchone()["n"]
+        conn.close()
+        out["ingest"] = {
+            "total_markets": total_markets,
+            "open_markets": open_markets,
+            "price_snapshots": snapshots,
+            "wu_temp_rows": wu_rows,
+        }
+    except Exception as e:
+        out["ingest"] = {"status": "❌ DB ERROR", "error": str(e)}
+
+    # ── 5. PAPER TRADES P&L ──
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("""
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN outcome='Yes' THEN 1 ELSE 0 END) as wins,
+                SUM(CASE WHEN outcome='No' THEN 1 ELSE 0 END) as losses,
+                COUNT(CASE WHEN outcome IS NULL THEN 1 END) as pending,
+                ROUND(SUM(COALESCE(pnl,0))::numeric, 2) as pnl,
+                COUNT(CASE WHEN wu_actual IS NOT NULL THEN 1 END) as with_wu_actual
+            FROM paper_trades
+        """)
+        row = dict(c.fetchone())
+        wins = row["wins"] or 0
+        losses = row["losses"] or 0
+        wr = round(wins / (wins + losses) * 100, 1) if (wins + losses) > 0 else 0
+        out["trades"] = {
+            "total": row["total"],
+            "wins": wins,
+            "losses": losses,
+            "pending": row["pending"],
+            "win_rate_pct": wr,
+            "total_pnl": float(row["pnl"] or 0),
+            "trades_with_wu_actual": row["with_wu_actual"],
+            "wu_actual_coverage": f"{int(row['with_wu_actual'] or 0)}/{row['total']}",
+        }
+        conn.close()
+    except Exception as e:
+        out["trades"] = {"status": "❌ DB ERROR", "error": str(e)}
+
+    # ── 6. LAST 10 SCAN DECISIONS ──
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("""
+            SELECT scanned_at, city, target_date, decision, reason, gfs_temp, consensus, spread
+            FROM scan_log ORDER BY id DESC LIMIT 10
+        """)
+        out["recent_scans"] = [dict(r) for r in c.fetchall()]
+        conn.close()
+    except Exception as e:
+        out["recent_scans"] = []
+
+    # ── 7. PENDING BETS ──
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("""
+            SELECT id, city, target_date, question, entry_price_c, edge, bet_size
+            FROM paper_trades WHERE outcome IS NULL ORDER BY id DESC
+        """)
+        out["pending_bets"] = [dict(r) for r in c.fetchall()]
+        conn.close()
+    except Exception as e:
+        out["pending_bets"] = []
+
+    # ── 8. CONTAINER UPTIME ──
+    out["checked_at"] = now_est.strftime("%Y-%m-%d %I:%M %p EST")
+    out["overall_status"] = "✅ ALL SYSTEMS GO" if (
+        "✅" in out.get("scanner", {}).get("status", "") and
+        "✅" in out.get("open_meteo", {}).get("status", "") and
+        "✅" in out.get("polymarket", {}).get("status", "")
+    ) else "⚠️ ISSUES DETECTED — see above"
+
+    return out
+
 @app.get("/run-tests")
 def run_tests():
     """Run full variable test suite. Returns pass/fail for every assumption."""
