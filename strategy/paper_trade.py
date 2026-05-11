@@ -76,7 +76,7 @@ BET_HUGE    = 50.0   # edge >= 35%
 BET_BIG     = 25.0   # edge >= 25%
 BET_SMALL   = 10.0   # edge >= 20%
 MAX_BETS_PER_CITY = 1
-SPREAD_LIMIT      = 3.0
+SPREAD_LIMIT      = 3.5  # raised from 3.0 — Atlanta avg_error=1.3°F, 3.5° is still 2.7x error
 DAYS_MIN          = 1
 DAYS_AHEAD        = 2   # V2.6: markets open 0-2 days out (confirmed again 2026-05-02)
 
