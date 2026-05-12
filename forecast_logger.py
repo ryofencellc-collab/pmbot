@@ -28,40 +28,20 @@ MODELS = {
 
 # All 31 confirmed active Polymarket temperature cities (verified 2026-05-12)
 # Logging daily forecasts for all — need 20+ days before trading each
+# Verified cities only — station confirmed on Polymarket (2026-05-12)
+# Add new cities only after verifying WU station from market description
 ALL_CITIES = {
-    # US — Fahrenheit
-    "Atlanta":      {"lat": 33.749,  "lon":  -84.388, "tz": "America/New_York",    "unit": "F", "temp_unit": "fahrenheit"},
-    "Dallas":       {"lat": 32.776,  "lon":  -96.797, "tz": "America/Chicago",     "unit": "F", "temp_unit": "fahrenheit"},
-    "NYC":          {"lat": 40.713,  "lon":  -74.006, "tz": "America/New_York",    "unit": "F", "temp_unit": "fahrenheit"},
-    "Denver":       {"lat": 39.717,  "lon": -104.752, "tz": "America/Denver",      "unit": "F", "temp_unit": "fahrenheit"},  # KBKF Buckley Space Force Base, Aurora CO
-    "Houston":      {"lat": 29.760,  "lon":  -95.370, "tz": "America/Chicago",     "unit": "F", "temp_unit": "fahrenheit"},
-    "Miami":        {"lat": 25.762,  "lon":  -80.192, "tz": "America/New_York",    "unit": "F", "temp_unit": "fahrenheit"},
-    "Chicago":      {"lat": 41.878,  "lon":  -87.630, "tz": "America/Chicago",     "unit": "F", "temp_unit": "fahrenheit"},
-    "Seattle":      {"lat": 47.606,  "lon": -122.332, "tz": "America/Los_Angeles", "unit": "F", "temp_unit": "fahrenheit"},
-    "Los Angeles":  {"lat": 34.052,  "lon": -118.244, "tz": "America/Los_Angeles", "unit": "F", "temp_unit": "fahrenheit"},
-    # International — Celsius
-    "Shanghai":     {"lat": 31.230,  "lon":  121.474, "tz": "Asia/Shanghai",       "unit": "C", "temp_unit": "celsius"},
-    "Singapore":    {"lat":  1.352,  "lon":  103.820, "tz": "Asia/Singapore",      "unit": "C", "temp_unit": "celsius"},
-    "London":       {"lat": 51.507,  "lon":   -0.128, "tz": "Europe/London",       "unit": "C", "temp_unit": "celsius"},
-    "Munich":       {"lat": 48.135,  "lon":   11.582, "tz": "Europe/Berlin",       "unit": "C", "temp_unit": "celsius"},
-    "Tokyo":        {"lat": 35.690,  "lon":  139.692, "tz": "Asia/Tokyo",          "unit": "C", "temp_unit": "celsius"},
-    "Wuhan":        {"lat": 30.593,  "lon":  114.305, "tz": "Asia/Shanghai",       "unit": "C", "temp_unit": "celsius"},
-    "Tel Aviv":     {"lat": 32.085,  "lon":   34.782, "tz": "Asia/Jerusalem",      "unit": "C", "temp_unit": "celsius"},
-    "Madrid":       {"lat": 40.417,  "lon":   -3.704, "tz": "Europe/Madrid",       "unit": "C", "temp_unit": "celsius"},
-    "Istanbul":     {"lat": 41.015,  "lon":   28.979, "tz": "Europe/Istanbul",     "unit": "C", "temp_unit": "celsius"},
-    "Toronto":      {"lat": 43.651,  "lon":  -79.347, "tz": "America/Toronto",     "unit": "C", "temp_unit": "celsius"},
-    "Taipei":       {"lat": 25.048,  "lon":  121.514, "tz": "Asia/Taipei",         "unit": "C", "temp_unit": "celsius"},
-    "Jakarta":      {"lat": -6.175,  "lon":  106.827, "tz": "Asia/Jakarta",        "unit": "C", "temp_unit": "celsius"},
-    "Mexico City":  {"lat": 19.433,  "lon":  -99.133, "tz": "America/Mexico_City", "unit": "C", "temp_unit": "celsius"},
-    "Paris":        {"lat": 48.857,  "lon":    2.347, "tz": "Europe/Paris",        "unit": "C", "temp_unit": "celsius"},
-    "Cape Town":    {"lat":-33.926,  "lon":   18.424, "tz": "Africa/Johannesburg", "unit": "C", "temp_unit": "celsius"},
-    "Milan":        {"lat": 45.465,  "lon":    9.186, "tz": "Europe/Rome",         "unit": "C", "temp_unit": "celsius"},
-    "Karachi":      {"lat": 24.861,  "lon":   67.011, "tz": "Asia/Karachi",        "unit": "C", "temp_unit": "celsius"},
-    "Amsterdam":    {"lat": 52.374,  "lon":    4.890, "tz": "Europe/Amsterdam",    "unit": "C", "temp_unit": "celsius"},
-    "Panama City":  {"lat":  8.994,  "lon":  -79.519, "tz": "America/Panama",      "unit": "C", "temp_unit": "celsius"},
-    "Qingdao":      {"lat": 36.067,  "lon":  120.383, "tz": "Asia/Shanghai",       "unit": "C", "temp_unit": "celsius"},
-    "Sao Paulo":    {"lat":-23.550,  "lon":  -46.633, "tz": "America/Sao_Paulo",   "unit": "C", "temp_unit": "celsius"},
-    "Lagos":        {"lat":  6.455,  "lon":    3.384, "tz": "Africa/Lagos",        "unit": "C", "temp_unit": "celsius"},
+    # US — Fahrenheit — verified
+    "Atlanta":     {"lat": 33.749,  "lon":  -84.388, "tz": "America/New_York",    "unit": "F", "temp_unit": "fahrenheit"},  # KATL
+    "Dallas":      {"lat": 32.776,  "lon":  -96.797, "tz": "America/Chicago",     "unit": "F", "temp_unit": "fahrenheit"},  # KDAL
+    "NYC":         {"lat": 40.713,  "lon":  -74.006, "tz": "America/New_York",    "unit": "F", "temp_unit": "fahrenheit"},  # KLGA
+    "Denver":      {"lat": 39.717,  "lon": -104.752, "tz": "America/Denver",      "unit": "F", "temp_unit": "fahrenheit"},  # KBKF
+    "Seattle":     {"lat": 47.606,  "lon": -122.332, "tz": "America/Los_Angeles", "unit": "F", "temp_unit": "fahrenheit"},  # KSEA
+    "Chicago":     {"lat": 41.878,  "lon":  -87.630, "tz": "America/Chicago",     "unit": "F", "temp_unit": "fahrenheit"},  # KORD
+    # International — Celsius — verified
+    "Shanghai":    {"lat": 31.230,  "lon":  121.474, "tz": "Asia/Shanghai",       "unit": "C", "temp_unit": "celsius"},     # ZSPD
+    "Singapore":   {"lat":  1.352,  "lon":  103.820, "tz": "Asia/Singapore",      "unit": "C", "temp_unit": "celsius"},     # WSSS
+    "London":      {"lat": 51.507,  "lon":   -0.128, "tz": "Europe/London",       "unit": "C", "temp_unit": "celsius"},     # EGLC
 }
 
 
