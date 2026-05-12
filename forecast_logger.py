@@ -33,7 +33,7 @@ ALL_CITIES = {
     "Atlanta":      {"lat": 33.749,  "lon":  -84.388, "tz": "America/New_York",    "unit": "F", "temp_unit": "fahrenheit"},
     "Dallas":       {"lat": 32.776,  "lon":  -96.797, "tz": "America/Chicago",     "unit": "F", "temp_unit": "fahrenheit"},
     "NYC":          {"lat": 40.713,  "lon":  -74.006, "tz": "America/New_York",    "unit": "F", "temp_unit": "fahrenheit"},
-    "Denver":       {"lat": 39.739,  "lon": -104.984, "tz": "America/Denver",      "unit": "F", "temp_unit": "fahrenheit"},
+    "Denver":       {"lat": 39.717,  "lon": -104.752, "tz": "America/Denver",      "unit": "F", "temp_unit": "fahrenheit"},  # KBKF Buckley Space Force Base, Aurora CO
     "Houston":      {"lat": 29.760,  "lon":  -95.370, "tz": "America/Chicago",     "unit": "F", "temp_unit": "fahrenheit"},
     "Miami":        {"lat": 25.762,  "lon":  -80.192, "tz": "America/New_York",    "unit": "F", "temp_unit": "fahrenheit"},
     "Chicago":      {"lat": 41.878,  "lon":  -87.630, "tz": "America/Chicago",     "unit": "F", "temp_unit": "fahrenheit"},
