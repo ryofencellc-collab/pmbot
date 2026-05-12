@@ -2466,6 +2466,124 @@ def weekly_summary():
 
 
 
+
+@app.get("/discover-cities")
+def discover_cities():
+    """
+    Auto-discovers all active Polymarket temperature markets.
+    Tests known city slugs for today+1 and today+2.
+    Returns full list with volume, unit, slug, and trading readiness.
+    """
+    import requests as req
+    from datetime import date, timedelta
+
+    # All known cities from Polymarket - expand this list as new ones appear
+    CANDIDATE_CITIES = [
+        # US - Fahrenheit
+        ("Atlanta",      "atlanta",       33.749,  -84.388, "America/New_York",  "F", "KATL"),
+        ("Dallas",       "dallas",        32.776,  -96.797, "America/Chicago",   "F", "KDAL"),
+        ("NYC",          "nyc",           40.713,  -74.006, "America/New_York",  "F", "KLGA"),
+        ("Houston",      "houston",       29.760,  -95.370, "America/Chicago",   "F", "KHOU"),
+        ("Miami",        "miami",         25.762,  -80.192, "America/New_York",  "F", "KMIA"),
+        ("Los Angeles",  "los-angeles",   34.052, -118.244, "America/Los_Angeles","F","KLAX"),
+        ("Chicago",      "chicago",       41.878,  -87.630, "America/Chicago",   "F", "KORD"),
+        ("Phoenix",      "phoenix",       33.448, -112.074, "America/Phoenix",   "F", "KPHX"),
+        ("Seattle",      "seattle",       47.606, -122.332, "America/Los_Angeles","F","KSEA"),
+        ("Denver",       "denver",        39.739, -104.984, "America/Denver",    "F", "KDEN"),
+        # International - Celsius
+        ("London",       "london",        51.507,   -0.128, "Europe/London",     "C", "EGLC"),
+        ("Tokyo",        "tokyo",         35.690,  139.692, "Asia/Tokyo",        "C", "RJTT"),
+        ("Istanbul",     "istanbul",      41.015,   28.979, "Europe/Istanbul",   "C", "LTBA"),
+        ("Milan",        "milan",         45.465,    9.186, "Europe/Rome",       "C", "LIMC"),
+        ("Tel Aviv",     "tel-aviv",      32.085,   34.782, "Asia/Jerusalem",    "C", "LLBG"),
+        ("Sao Paulo",    "sao-paulo",    -23.550,  -46.633, "America/Sao_Paulo", "C", "SBGR"),
+        ("Lagos",        "lagos",          6.455,    3.384, "Africa/Lagos",      "C", "DNMM"),
+        ("Wuhan",        "wuhan",         30.593,  114.305, "Asia/Shanghai",     "C", "ZHHH"),
+        ("Munich",       "munich",        48.135,   11.582, "Europe/Berlin",     "C", "EDDM"),
+        ("Qingdao",      "qingdao",       36.067,  120.383, "Asia/Shanghai",     "C", "ZSQD"),
+        ("Panama City",  "panama-city",    8.994,  -79.519, "America/Panama",   "C", "MPTO"),
+        ("Madrid",       "madrid",        40.417,   -3.704, "Europe/Madrid",     "C", "LEMD"),
+        ("Taipei",       "taipei",        25.048,  121.514, "Asia/Taipei",       "C", "RCTP"),
+        ("Jakarta",      "jakarta",       -6.175,  106.827, "Asia/Jakarta",      "C", "WIII"),
+        ("Cape Town",    "cape-town",    -33.926,   18.424, "Africa/Johannesburg","C","FACT"),
+        ("Shanghai",     "shanghai",      31.230,  121.474, "Asia/Shanghai",     "C", "ZSPD"),
+        ("Karachi",      "karachi",       24.861,   67.011, "Asia/Karachi",      "C", "OPKC"),
+        ("Toronto",      "toronto",       43.651,  -79.347, "America/Toronto",   "C", "CYYZ"),
+        ("Paris",        "paris",         48.857,    2.347, "Europe/Paris",      "C", "LFPG"),
+        ("Mexico City",  "mexico-city",   19.433,  -99.133, "America/Mexico_City","C","MMMX"),
+        ("Dubai",        "dubai",         25.204,   55.271, "Asia/Dubai",        "C", "OMDB"),
+        ("Singapore",    "singapore",      1.352,  103.820, "Asia/Singapore",    "C", "WSSS"),
+        ("Bangkok",      "bangkok",       13.756,  100.502, "Asia/Bangkok",      "C", "VTBS"),
+        ("Sydney",       "sydney",       -33.869,  151.209, "Australia/Sydney",  "C", "YSSY"),
+        ("Berlin",       "berlin",        52.520,   13.405, "Europe/Berlin",     "C", "EDDB"),
+        ("Barcelona",    "barcelona",     41.385,    2.173, "Europe/Madrid",     "C", "LEBL"),
+        ("Amsterdam",    "amsterdam",     52.374,    4.890, "Europe/Amsterdam",  "C", "EHAM"),
+        ("New Orleans",  "new-orleans",   29.951,  -90.071, "America/Chicago",   "F", "KMSY"),
+    ]
+
+    today = date.today()
+    results = []
+    not_found = []
+
+    for city_name, slug, lat, lon, tz, unit, station in CANDIDATE_CITIES:
+        found = False
+        for days_out in [1, 2]:
+            test_date = today + timedelta(days=days_out)
+            month = test_date.strftime("%B").lower()
+            full_slug = f"highest-temperature-in-{slug}-on-{month}-{test_date.day}-{test_date.year}"
+            try:
+                r = req.get(
+                    "https://gamma-api.polymarket.com/events",
+                    params={"slug": full_slug},
+                    timeout=8,
+                    headers={"User-Agent": "PolyEdge/1.0"}
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    if data and len(data) > 0 and data[0].get("markets"):
+                        markets = data[0]["markets"]
+                        vol = sum(float(m.get("volumeNum", 0) or 0) for m in markets)
+                        active = sum(1 for m in markets if m.get("active"))
+                        results.append({
+                            "city": city_name,
+                            "slug": slug,
+                            "lat": lat,
+                            "lon": lon,
+                            "timezone": tz,
+                            "unit": unit,
+                            "wu_station": station,
+                            "ranges": len(markets),
+                            "active_ranges": active,
+                            "volume_usd": round(vol),
+                            "days_out": days_out,
+                            "test_date": str(test_date),
+                            "tradeable": False,  # needs 20+ days forecast data
+                            "notes": "Add to forecast_logger to start collecting data"
+                        })
+                        found = True
+                        break
+            except Exception as e:
+                pass
+
+        if not found:
+            not_found.append(city_name)
+
+    # Sort by volume descending
+    results.sort(key=lambda x: -x["volume_usd"])
+
+    return {
+        "checked_at": date.today().isoformat(),
+        "total_found": len(results),
+        "total_not_found": len(not_found),
+        "active_cities": results,
+        "no_market": not_found,
+        "instructions": (
+            "To add a city: copy its entry into CITY_ACCURACY in paper_trade.py "
+            "and add to ALL_CITIES in forecast_logger.py. "
+            "Wait 20+ days for accuracy baseline before trading."
+        )
+    }
+
 @app.get("/migrate-dedup")
 def migrate_dedup():
     """
