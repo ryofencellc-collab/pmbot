@@ -618,12 +618,37 @@ def run_scan():
                 )
 
                 if len(selected_ranges) < 3:
-                    # Not enough ranges available — fall back to single best
+                    # Not enough ranges for multi — fall through to single range logic below
                     log_scan(city, target, days_out, fc, "SKIP_NOEDGE",
-                             f"Multi-range: only {len(selected_ranges)} ranges available (<3)",
+                             f"Multi-range: only {len(selected_ranges)} ranges available (<3), checking single range",
                              market_id=best_m["id"] if best_m else None,
                              question=best_m["_question"] if best_m else None,
                              price_c=total_cost_c)
+                    # ── SINGLE RANGE FALLBACK when multi-range fails ──
+                    # If best single range has strong edge (>=25%), take it
+                    SINGLE_FALLBACK_EDGE = 0.25
+                    if best_m and best_edge is not None and best_edge >= SINGLE_FALLBACK_EDGE:
+                        if bets_today(city, target) < MAX_BETS_PER_CITY:
+                            bet_size = get_bet_size(best_edge)
+                            trade_id = place_trade(
+                                city, target, days_out, fc,
+                                best_m["id"], best_m["_question"], best_m["_price_c"],
+                                best_ed, bet_size
+                            )
+                            if trade_id:
+                                placed += 1
+                                counts["BUY"] += 1
+                                if city not in bought:
+                                    bought.append(city)
+                                log_scan(city, target, days_out, fc, "BUY_SINGLE",
+                                         f"Single fallback: edge={best_edge:+.1%} >= {SINGLE_FALLBACK_EDGE:.0%} "
+                                         f"corrected={corrected:.1f}{unit}",
+                                         market_id=best_m["id"],
+                                         question=best_m["_question"],
+                                         price_c=best_m["_price_c"],
+                                         trade_id=trade_id)
+                    time.sleep(0.3)
+                    continue
                 else:
                     ranges_desc = ", ".join([f"{r['lo']}-{r['hi']}F@{r['price_c']}¢"
                                             for r in selected_ranges])
