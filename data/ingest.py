@@ -12,18 +12,77 @@ from data.database import get_conn, init_db
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 WU_API_KEY = "e1f10a1e78da46f5b10a1e78da96f525"
 
-# Only cities we actively trade — reduces API calls dramatically
-# 3 cities x 38 dates = 114 calls vs 8 cities = 304 calls
+# All 31 confirmed active Polymarket temperature cities (verified 2026-05-12)
 CITY_SLUGS = {
-    "Atlanta":   "atlanta",
-    "Dallas":    "dallas",
-    "NYC":       "nyc",
+    # US — Fahrenheit
+    "Atlanta":      "atlanta",
+    "Dallas":       "dallas",
+    "NYC":          "nyc",
+    "Denver":       "denver",
+    "Houston":      "houston",
+    "Miami":        "miami",
+    "Chicago":      "chicago",
+    "Seattle":      "seattle",
+    "Los Angeles":  "los-angeles",
+    # International — Celsius
+    "Shanghai":     "shanghai",
+    "Singapore":    "singapore",
+    "London":       "london",
+    "Munich":       "munich",
+    "Tokyo":        "tokyo",
+    "Wuhan":        "wuhan",
+    "Tel Aviv":     "tel-aviv",
+    "Madrid":       "madrid",
+    "Istanbul":     "istanbul",
+    "Toronto":      "toronto",
+    "Taipei":       "taipei",
+    "Jakarta":      "jakarta",
+    "Mexico City":  "mexico-city",
+    "Paris":        "paris",
+    "Cape Town":    "cape-town",
+    "Milan":        "milan",
+    "Karachi":      "karachi",
+    "Amsterdam":    "amsterdam",
+    "Panama City":  "panama-city",
+    "Qingdao":      "qingdao",
+    "Sao Paulo":    "sao-paulo",
+    "Lagos":        "lagos",
 }
 
 WU_STATIONS = {
-    "Atlanta":   {"station": "KATL", "country": "US", "unit": "F"},
-    "Dallas":    {"station": "KDAL", "country": "US", "unit": "F"},
-    "NYC":       {"station": "KLGA", "country": "US", "unit": "F"},
+    # US
+    "Atlanta":      {"station": "KATL", "country": "US", "unit": "F"},
+    "Dallas":       {"station": "KDAL", "country": "US", "unit": "F"},
+    "NYC":          {"station": "KLGA", "country": "US", "unit": "F"},
+    "Denver":       {"station": "KDEN", "country": "US", "unit": "F"},
+    "Houston":      {"station": "KHOU", "country": "US", "unit": "F"},
+    "Miami":        {"station": "KMIA", "country": "US", "unit": "F"},
+    "Chicago":      {"station": "KORD", "country": "US", "unit": "F"},
+    "Seattle":      {"station": "KSEA", "country": "US", "unit": "F"},
+    "Los Angeles":  {"station": "KLAX", "country": "US", "unit": "F"},
+    # International
+    "Shanghai":     {"station": "ZSPD", "country": "CN", "unit": "C"},
+    "Singapore":    {"station": "WSSS", "country": "SG", "unit": "C"},
+    "London":       {"station": "EGLC", "country": "GB", "unit": "C"},
+    "Munich":       {"station": "EDDM", "country": "DE", "unit": "C"},
+    "Tokyo":        {"station": "RJTT", "country": "JP", "unit": "C"},
+    "Wuhan":        {"station": "ZHHH", "country": "CN", "unit": "C"},
+    "Tel Aviv":     {"station": "LLBG", "country": "IL", "unit": "C"},
+    "Madrid":       {"station": "LEMD", "country": "ES", "unit": "C"},
+    "Istanbul":     {"station": "LTBA", "country": "TR", "unit": "C"},
+    "Toronto":      {"station": "CYYZ", "country": "CA", "unit": "C"},
+    "Taipei":       {"station": "RCTP", "country": "TW", "unit": "C"},
+    "Jakarta":      {"station": "WIII", "country": "ID", "unit": "C"},
+    "Mexico City":  {"station": "MMMX", "country": "MX", "unit": "C"},
+    "Paris":        {"station": "LFPG", "country": "FR", "unit": "C"},
+    "Cape Town":    {"station": "FACT", "country": "ZA", "unit": "C"},
+    "Milan":        {"station": "LIMC", "country": "IT", "unit": "C"},
+    "Karachi":      {"station": "OPKC", "country": "PK", "unit": "C"},
+    "Amsterdam":    {"station": "EHAM", "country": "NL", "unit": "C"},
+    "Panama City":  {"station": "MPTO", "country": "PA", "unit": "C"},
+    "Qingdao":      {"station": "ZSQD", "country": "CN", "unit": "C"},
+    "Sao Paulo":    {"station": "SBGR", "country": "BR", "unit": "C"},
+    "Lagos":        {"station": "DNMM", "country": "NG", "unit": "C"},
 }
 
 
