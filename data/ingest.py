@@ -54,7 +54,7 @@ WU_STATIONS = {
     "Atlanta":      {"station": "KATL", "country": "US", "unit": "F"},
     "Dallas":       {"station": "KDAL", "country": "US", "unit": "F"},
     "NYC":          {"station": "KLGA", "country": "US", "unit": "F"},
-    "Denver":       {"station": "KDEN", "country": "US", "unit": "F"},
+    "Denver":       {"station": "KBKF", "country": "US", "unit": "F"},  # Buckley Space Force Base, Aurora CO
     "Houston":      {"station": "KHOU", "country": "US", "unit": "F"},
     "Miami":        {"station": "KMIA", "country": "US", "unit": "F"},
     "Chicago":      {"station": "KORD", "country": "US", "unit": "F"},
