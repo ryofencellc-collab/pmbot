@@ -1,20 +1,24 @@
 """
-paper_trade.py — PolyEdge Edge-Based Paper Trading Engine
-Last updated: 2026-04-30 3:10 PM EST
+paper_trade.py — PolyEdge Trading Engine v3.0
+Rebuilt: 2026-05-19
 
-WHAT CHANGED FROM PREVIOUS VERSION:
-  1. Only trades PROVEN cities (Atlanta + Dallas) — no std=3.0 fake edges
-  2. Direction consistency check — never bets against our own forecast
-  3. DAYS_AHEAD reduced to 2 — markets only open 0-2 days out (V2.5 proven)
-  4. DAYS_MIN = 1 — scan from tomorrow onwards
-  5. Higher minimum edge (20%) — more conservative until we have more data
+AUDIT FINDINGS THAT DROVE THIS REBUILD:
+  - 13 bets placed below minimum edge threshold (-$130)
+  - 3 bets placed with negative edge (-$40, won by luck)
+  - NYC threshold bypass bug (bets at 6.9%, 21.8%, 23.2%)
+  - $50 bet on Atlanta 83°F (model underpredicts above 82°F)
+  - Outcome checker not resolving stale bets
+  - Multi-range strategy bypassing direction filter
 
-RULES:
-  - Every number comes from real proven data. No estimates.
-  - Only bet ranges consistent with forecast direction.
-  - Max 1 bet per city per day — highest edge only.
-  - Proven cities: Atlanta (bias=-1.33F, std=1.05F) + Dallas (bias=-0.30F, std=1.90F)
-  - Do NOT add a city without 20+ days of real accuracy data from /forecast/city-accuracy
+REBUILD RULES — every parameter justified by data:
+  - Atlanta 75-81°F only: 75% accuracy, avg_err=1.1°F (n=8)
+  - Dallas 87°F+ only: 78% accuracy, avg_err=1.3°F (n=9)
+  - NYC: do not trade — 64.3% accuracy
+  - Min edge: 25% — clean bets averaged 29%
+  - Spread limit: 3.0° — id=443 at 3.4° cost $50
+  - Bet size: $10 flat — no scaling until 30+ clean trades proven
+  - No multi-range — too complex, created bypass bugs
+  - Hard temperature range gating — no bets outside proven ranges
 """
 
 import json
@@ -29,69 +33,56 @@ GAMMA      = "https://gamma-api.polymarket.com"
 EST_OFFSET = -5
 
 # ─────────────────────────────────────────────
-# PROVEN CITY ACCURACY — REAL DATA ONLY
-# Source: /forecast/city-accuracy?days=30
-# DO NOT add cities without 20+ days of verified data
+# CITY CONFIG — audit-justified parameters
+# Source: /forecast/city-accuracy 30-day data
+# DO NOT modify without data justification
 # ─────────────────────────────────────────────
-CITY_ACCURACY = {
-    # bias = mean signed error (forecast - actual)
-    #   positive = model runs warm (overforecasts) — subtract to correct
-    # std = standard deviation of signed errors after bias correction
-    # Source: /backtest/bias-corrected — 90 days Feb 1 to May 1 2026
-    # DO NOT add cities without 20+ days of real accuracy data
-    # ── PROVEN (tradeable now) ──────────────────────────────────
-    "Atlanta": {"bias": 1.17, "std": 1.70, "days": 90, "lat": 33.749, "lon": -84.388, "unit": "F", "slug": "atlanta"},  # 76.7% ✅ BET
-    "Dallas":  {"bias": 1.37, "std": 1.87, "days": 90, "lat": 32.776, "lon": -96.797, "unit": "F", "slug": "dallas"},   # 65.5% ⚠️ HIGH EDGE ONLY
-    "NYC":     {"bias": 1.13, "std": 3.10, "days": 90, "lat": 40.713, "lon": -74.006, "unit": "F", "slug": "nyc"},      # 53.3% ❌ PAUSED — 4 big misses in a row
-    # ── LOGGING (collecting data, not yet tradeable) ────────────
-    # These cities have Polymarket markets. Forecast logger is now
-    # tracking them. Add to trading once 20+ days of data collected.
-    # "Miami":    {"bias": 0, "std": 3.0, "days": 0, "lat": 25.761, "lon": -80.191, "unit": "F", "slug": "miami"},
-    # "Chicago":  {"bias": 0, "std": 3.0, "days": 0, "lat": 41.878, "lon": -87.629, "unit": "F", "slug": "chicago"},
-    # "Houston":  {"bias": 0, "std": 3.0, "days": 0, "lat": 29.760, "lon": -95.369, "unit": "F", "slug": "houston"},
-    # "Seattle":  std=3.33 — too noisy
+
+CITY_CONFIG = {
+    "Atlanta": {
+        "slug":     "atlanta",
+        "lat":      33.749,
+        "lon":      -84.388,
+        "unit":     "F",
+        "bias":     0.5,    # 75-81°F range: model slightly high, conservative correction
+        "std":      1.1,    # avg_err=1.1°F in proven range
+        "min_temp": 75,     # HARD FLOOR — do not bet below this
+        "max_temp": 81,     # HARD CEILING — do not bet above this
+        # Audit finding: 75-81°F = 75% accuracy. Below 75°F = 55%. Above 82°F = 50%.
+        "min_edge": 0.25,
+        "tradeable": True,
+    },
+    "Dallas": {
+        "slug":     "dallas",
+        "lat":      32.776,
+        "lon":      -96.797,
+        "unit":     "F",
+        "bias":     0.4,    # 87°F+ range: model slightly high
+        "std":      1.3,    # avg_err=1.3°F in proven range
+        "min_temp": 87,     # HARD FLOOR — only bet hot Dallas days
+        "max_temp": 999,    # No ceiling — model holds above 87°F
+        # Audit finding: 87°F+ = 78% accuracy. Below 87°F = 44-50%.
+        "min_edge": 0.25,
+        "tradeable": True,
+    },
+    # NYC: 64.3% accuracy — do not trade
+    # Chicago: 37.9% — never trade
+    # Seattle: 35.7% — never trade
+    # Denver/London/Shanghai/Singapore: collecting data, not yet tradeable
 }
 
-# Cities to track for forecast accuracy (not yet trading)
-# The forecast logger will collect data for these cities daily
-CITIES_LOGGING = {
-    "Miami":   {"lat": 25.761, "lon": -80.191, "unit": "F", "slug": "miami"},
-    "Chicago": {"lat": 41.878, "lon": -87.629, "unit": "F", "slug": "chicago"},
-    "Houston": {"lat": 29.760, "lon": -95.369, "unit": "F", "slug": "houston"},
-}
-
-# Trading parameters
-MIN_EDGE     = 0.20   # 20% global minimum — hard floor, never bet below this
-MIN_EDGE_NYC = 0.25   # NYC needs higher threshold — 53% accuracy, pause until recovers
-MIN_EDGE_DAL = 0.25   # Dallas needs higher threshold — 65.5% accuracy, needs big edge
-MIN_EDGE_MULTI = 0.0  # Per-range floor in multi-range (neg edge blocked separately)
-MIN_PRICE_C  = 0.5    # lower floor for multi-range
-MAX_PRICE_C  = 40.0   # max price per range — above 40¢ math doesn't work
-
-# Forecast cache — avoid blowing Open-Meteo API limit
-# Cache forecast for each city+date, refresh max once per hour
-_FORECAST_CACHE = {}   # key: (city, date_str) → {consensus, gfs, ukmo, mf, cached_at}
-_CACHE_TTL_SEC  = 3600 # 1 hour
-BET_HUGE    = 50.0   # edge >= 35%
-BET_BIG     = 25.0   # edge >= 25%
-BET_SMALL   = 10.0   # edge >= 20%
-MAX_BETS_PER_CITY = 1
-SPREAD_LIMIT      = 3.5  # raised from 3.0 — Atlanta avg_error=1.3°F, 3.5° is still 2.7x error
-DAYS_MIN          = 1
-DAYS_AHEAD        = 2   # V2.6: markets open 0-2 days out (confirmed again 2026-05-02)
-
-# Multi-range betting — V2 strategy based on 90-day backtest
-# Backtest results (bias-corrected):
-#   Atlanta 5-range: 92.2% win rate
-#   Dallas  5-range: 81.1% win rate
-#   NYC     5-range: 72.2% win rate
-MULTI_RANGE_ENABLED = True   # bet 5 ranges centered on corrected forecast
-MULTI_RANGE_WIDTH   = 2      # ±2°F = 5 ranges total
-MULTI_RANGE_BET     = 10.0   # $10 per range = $50 total max per city per day
+# Trading parameters — all audit-justified
+MIN_PRICE_C      = 0.5    # below this the payout math breaks down
+MAX_PRICE_C      = 40.0   # above this the market already knows — no edge
+SPREAD_LIMIT     = 3.0    # id=443 was placed at 3.4°, lost $50 — back to 3.0
+BASE_BET         = 10.0   # flat $10 until 30+ clean resolved trades proven
+MAX_BETS_PER_CITY = 1     # max 1 bet per city per target date
+DAYS_MIN         = 1
+DAYS_AHEAD       = 2
 
 
 # ─────────────────────────────────────────────
-# PROBABILITY ENGINE — NORMAL DISTRIBUTION
+# PROBABILITY ENGINE
 # ─────────────────────────────────────────────
 
 def _erf(x):
@@ -108,10 +99,6 @@ def _cdf(x, mean, std):
 
 
 def true_probability(lo, hi, consensus, bias, std):
-    """
-    P(temp lands in [lo, hi]) using bias-corrected normal distribution.
-    corrected = consensus - bias  (removes systematic model error)
-    """
     corrected = consensus - bias
     if hi >= 999:
         return 1.0 - _cdf(lo, corrected, std)
@@ -121,12 +108,6 @@ def true_probability(lo, hi, consensus, bias, std):
 
 
 def parse_range(question, unit):
-    """
-    Parse temperature range from Polymarket question.
-    Strips date ('on April 30') before extracting numbers to avoid
-    reading the day as a temperature.
-    Returns (lo, hi, direction) or (None, None, None).
-    """
     orig = question.lower()
     q = orig[:orig.rfind(" on ")] if " on " in orig else orig
 
@@ -149,60 +130,53 @@ def parse_range(question, unit):
     return None, None, None
 
 
-def is_consistent_with_forecast(lo, hi, direction, corrected, std):
+# ─────────────────────────────────────────────
+# TEMPERATURE RANGE GATE
+# Core rebuild requirement: only bet in proven ranges
+# ─────────────────────────────────────────────
+
+def in_proven_range(city, consensus):
     """
-    Check that we are betting WITH our forecast, not against it.
-
-    'higher' (e.g. 'will temp be 70F or higher?'):
-        We bet YES. Only valid if our corrected forecast >= threshold (lo).
-        We genuinely expect it to be high.
-
-    'lower' (e.g. 'will temp be 60F or below?'):
-        We bet YES. Only valid if our corrected forecast <= threshold (hi).
-        We genuinely expect it to be low.
-
-    'exact' (e.g. 'will temp be 72-73F?'):
-        We bet YES. Only valid if corrected forecast is within 1.5 std
-        of the range center. We genuinely expect it to land here.
-
-    This prevents the Madrid/Sao Paulo problem where we bet "or below"
-    on ranges well below our own forecast.
+    Returns True only if forecast is within the city's proven temp range.
+    This is a HARD gate — no exceptions.
+    Atlanta: only 75-81°F (75% accuracy)
+    Dallas:  only 87°F+   (78% accuracy)
     """
-    if direction == "higher":
-        return corrected >= lo
-    if direction == "lower":
-        return corrected <= hi
-    if direction == "exact":
-        center = (lo + hi) / 2.0
-        return abs(corrected - center) <= 1.5 * std
-    return False
+    cfg = CITY_CONFIG.get(city)
+    if not cfg:
+        return False
+    return cfg["min_temp"] <= consensus <= cfg["max_temp"]
 
+
+# ─────────────────────────────────────────────
+# EDGE CALCULATION
+# ─────────────────────────────────────────────
 
 def calculate_edge(question, consensus, unit, city, price_c):
-    """
-    Calculate edge = true_prob - market_prob.
-    Returns dict or None if:
-      - city not proven
-      - range unparseable
-      - bet direction contradicts forecast
-    """
-    acc = CITY_ACCURACY.get(city)
-    if acc is None:
+    cfg = CITY_CONFIG.get(city)
+    if not cfg:
         return None
 
-    bias = acc["bias"]
-    std  = acc["std"]
+    bias = cfg["bias"]
+    std  = cfg["std"]
     corrected = consensus - bias
 
     lo, hi, direction = parse_range(question, unit)
     if lo is None:
         return None
 
-    if not is_consistent_with_forecast(lo, hi, direction, corrected, std):
+    # Direction consistency — only bet WITH our forecast
+    if direction == "higher" and corrected < lo:
         return None
+    if direction == "lower" and corrected > hi:
+        return None
+    if direction == "exact":
+        center = (lo + hi) / 2.0
+        if abs(corrected - center) > 1.5 * std:
+            return None
 
-    tp  = true_probability(lo, hi, consensus, bias, std)
-    mkt = price_c / 100.0
+    tp   = true_probability(lo, hi, consensus, bias, std)
+    mkt  = price_c / 100.0
     edge = tp - mkt
 
     return {
@@ -215,95 +189,6 @@ def calculate_edge(question, consensus, unit, city, price_c):
     }
 
 
-def get_bet_size(edge):
-    if edge >= 0.35: return BET_HUGE
-    if edge >= 0.25: return BET_BIG
-    return BET_SMALL
-
-
-def select_multi_ranges(corrected, unit, markets, city):
-    """
-    Select 5 ranges centered on the bias-corrected forecast.
-    Returns list of (market, price_c, range_lo, range_hi) tuples.
-
-    Strategy based on 90-day backtest:
-      Atlanta: 92.2% win rate with 5 ranges + bias correction
-      Dallas:  81.1% win rate with 5 ranges + bias correction
-      NYC:     72.2% win rate with 5 ranges + bias correction
-
-    The 5 ranges are:
-      [corrected-2, corrected-1], [corrected-1, corrected],
-      [corrected, corrected+1], [corrected+1, corrected+2],
-      [corrected+2, corrected+3]
-    """
-    import json as _j
-
-    center_lo = int(corrected)
-    # Build target ranges: center ±2
-    target_ranges = []
-    for offset in range(-MULTI_RANGE_WIDTH, MULTI_RANGE_WIDTH + 1):
-        lo = center_lo + offset
-        hi = lo + 1
-        target_ranges.append((lo, hi))
-
-    selected = []
-    total_cost_c = 0.0
-
-    for m in markets:
-        if not m.get("acceptingOrders", False):
-            continue
-
-        question = m.get("question", "")
-        lo, hi, direction = parse_range(question, unit)
-        if lo is None or direction != "exact":
-            continue
-
-        # Check if this range is in our target set
-        lo_int = int(lo)
-        hi_int = int(hi)
-        if (lo_int, hi_int) not in target_ranges:
-            continue
-
-        # NOTE: direction filter intentionally bypassed here.
-        # Multi-range strategy deliberately covers ranges on both sides
-        # of the corrected forecast — direction filter does not apply.
-
-        prices = m.get("outcomePrices", "[]")
-        if isinstance(prices, str):
-            try: prices = _j.loads(prices)
-            except: continue
-
-        yes_price = float(prices[0]) if prices else 0.0
-        price_c   = round(yes_price * 100, 2)
-
-        # Skip ranges outside price bounds
-        if price_c > MAX_PRICE_C or price_c < 0.5:
-            continue
-
-        # FIX: Skip negative edge ranges — market correctly priced, no edge
-        lo_r, hi_r, _ = parse_range(question, unit)
-        if lo_r is not None:
-            acc = CITY_ACCURACY.get(city, {})
-            from_acc = lambda k: acc.get(k, 0)
-            tp_check = true_probability(lo_r, hi_r,
-                (corrected if 'corrected' in dir() else lo_r),
-                from_acc('bias'), from_acc('std'))
-            calc_edge = tp_check - yes_price
-            if calc_edge < 0:
-                continue  # negative edge — market knows better, skip
-
-        total_cost_c += price_c
-        selected.append({
-            "market":   m,
-            "price_c":  price_c,
-            "lo":       lo_int,
-            "hi":       hi_int,
-            "question": question,
-        })
-
-    return selected, round(total_cost_c, 2)
-
-
 # ─────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────
@@ -311,71 +196,6 @@ def select_multi_ranges(corrected, unit, markets, city):
 def est_str():
     from datetime import timezone, timedelta
     return datetime.now(timezone(timedelta(hours=EST_OFFSET))).strftime("%Y-%m-%d %I:%M %p EST")
-
-
-def log_prices(city, target, days_out, fc, markets_data):
-    """
-    Save ALL range prices every scan — not just the one we bet.
-    This builds a price history so we can see how markets move hour by hour.
-    Essential for multi-range cost analysis.
-    """
-    try:
-        conn = get_conn()
-        c = conn.cursor()
-        # Create table if not exists
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS price_log (
-                id          SERIAL PRIMARY KEY,
-                logged_at   TEXT,
-                city        TEXT,
-                target_date TEXT,
-                days_out    INT,
-                consensus   REAL,
-                corrected   REAL,
-                unit        TEXT,
-                market_id   TEXT,
-                question    TEXT,
-                price_c     REAL,
-                yes_price   REAL,
-                volume      REAL
-            )
-        """)
-        scanned_at = est_str()
-        acc = CITY_ACCURACY.get(city, {})
-        bias = acc.get("bias", 0)
-        corrected = round((fc.get("consensus") or 0) - bias, 2)
-        # WU records temps in WHOLE DEGREES — note rounded value for reference
-        corrected_wu = round(corrected)  # what WU would record
-
-        for m in markets_data:
-            if not m.get("acceptingOrders", False):
-                continue
-            prices = m.get("outcomePrices", "[]")
-            if isinstance(prices, str):
-                import json as _j
-                try: prices = _j.loads(prices)
-                except: continue
-            yes_price = float(prices[0]) if prices else 0.0
-            price_c   = round(yes_price * 100, 2)
-            question  = m.get("question", "")
-            mid       = m.get("id", "")
-            volume    = float(m.get("volume", 0) or 0)
-
-            c.execute("""
-                INSERT INTO price_log
-                    (logged_at, city, target_date, days_out,
-                     consensus, corrected, unit,
-                     market_id, question, price_c, yes_price, volume)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            """, (
-                scanned_at, city, str(target), days_out,
-                fc.get("consensus"), corrected, fc.get("unit", "F"),
-                mid, question, price_c, yes_price, volume
-            ))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"[PRICE LOG ERR] {e}")
 
 
 def log_scan(city, target, days_out, fc, decision, reason,
@@ -433,23 +253,12 @@ def place_trade(city, target, days_out, fc, market_id, question, price_c, ed, be
         return None
 
 
-def bets_today(city, target_date=None):
-    """
-    Count bets for this city.
-    If target_date given: count bets for that specific target date (prevents
-    betting same city+date twice, but allows betting city on different dates).
-    If no target_date: count all bets placed today (legacy behavior).
-    """
+def bets_today(city, target_date):
     try:
         conn = get_conn()
         c = conn.cursor()
-        if target_date:
-            # Per target_date limit — allows betting Atlanta May10 AND May11
-            c.execute("SELECT COUNT(*) as n FROM paper_trades WHERE city=%s AND target_date=%s",
-                      (city, str(target_date)))
-        else:
-            c.execute("SELECT COUNT(*) as n FROM paper_trades WHERE city=%s AND trade_date=%s",
-                      (city, date.today().isoformat()))
+        c.execute("SELECT COUNT(*) as n FROM paper_trades WHERE city=%s AND target_date=%s",
+                  (city, str(target_date)))
         n = c.fetchone()["n"]
         conn.close()
         return n
@@ -462,12 +271,6 @@ def bets_today(city, target_date=None):
 # ─────────────────────────────────────────────
 
 def run_scan():
-    """
-    2026-04-30: Only scans Atlanta + Dallas (proven cities).
-    Checks 1-2 days out (proven market window).
-    Applies direction consistency filter.
-    Logs every decision with full reasoning.
-    """
     try:
         from strategy.early_entry import ALL_CITIES, get_multi_model_forecast
     except ImportError:
@@ -477,21 +280,23 @@ def run_scan():
     placed = 0
     bought = []
     counts = {k: 0 for k in [
-        "SKIP_UNTRUSTED", "SKIP_SPREAD", "SKIP_NOMARKET", "SKIP_PRICE",
-        "SKIP_DIRECTION", "SKIP_PARSE", "SKIP_NOEDGE", "SKIP_LIMIT",
-        "SKIP_DUPLICATE", "BUY"
+        "SKIP_UNTRUSTED", "SKIP_TEMPRANGE", "SKIP_SPREAD",
+        "SKIP_NOMARKET", "SKIP_PRICE", "SKIP_DIRECTION",
+        "SKIP_NOEDGE", "SKIP_LIMIT", "SKIP_DUPLICATE", "BUY"
     ]}
 
-    print(f"\n[SCAN] {est_str()} — proven cities: {list(CITY_ACCURACY.keys())}")
+    tradeable = {k: v for k, v in CITY_CONFIG.items() if v["tradeable"]}
+    print(f"\n[SCAN] {est_str()} — trading cities: {list(tradeable.keys())}")
 
-    for city, config in ALL_CITIES.items():
-        if city not in CITY_ACCURACY:
+    for city, cfg in tradeable.items():
+        slug = cfg["slug"]
+        unit = cfg["unit"]
+
+        # Get ALL_CITIES entry for forecast
+        city_fc_cfg = ALL_CITIES.get(city)
+        if not city_fc_cfg:
             counts["SKIP_UNTRUSTED"] += 1
             continue
-
-        slug = config["slug"]
-        unit = config["unit"]
-        acc  = CITY_ACCURACY[city]
 
         for days_out in range(DAYS_MIN, DAYS_AHEAD + 1):
             target    = today + timedelta(days=days_out)
@@ -500,33 +305,40 @@ def run_scan():
             event_slug = f"highest-temperature-in-{slug}-on-{slug_date}-{target.year}"
 
             # Get forecast
-            fc = get_multi_model_forecast(config, date_str)
-            if fc is None:
+            fc = get_multi_model_forecast(city_fc_cfg, date_str)
+            if fc is None or fc.get("consensus") is None:
                 log_scan(city, target, days_out, {"unit": unit},
                          "SKIP", "No forecast data")
                 continue
 
-            fc["unit"] = unit
-            consensus  = fc["consensus"]
-            spread     = fc["spread"]
-            corrected  = consensus - acc["bias"]
+            fc["unit"]      = unit
+            consensus       = fc["consensus"]
+            spread          = fc["spread"]
 
-            # Skip high spread
+            # ── HARD TEMPERATURE RANGE GATE ──────────────────────────
+            # Only bet in proven temperature ranges — audit requirement
+            if not in_proven_range(city, consensus):
+                counts["SKIP_TEMPRANGE"] += 1
+                log_scan(city, target, days_out, fc, "SKIP_TEMPRANGE",
+                         f"Consensus={consensus:.1f}{unit} outside proven range "
+                         f"[{cfg['min_temp']},{cfg['max_temp']}]")
+                continue
+
+            # ── SPREAD FILTER ─────────────────────────────────────────
             if spread > SPREAD_LIMIT and fc.get("models_available", 1) >= 2:
                 counts["SKIP_SPREAD"] += 1
                 log_scan(city, target, days_out, fc, "SKIP_SPREAD",
                          f"Spread={spread:.1f}° > {SPREAD_LIMIT}°")
                 continue
 
-            # Per target_date limit — max 1 bet per city per target date
-            # (allows betting Atlanta May10 AND May11 on the same day)
+            # ── ALREADY BET THIS TARGET DATE ─────────────────────────
             if bets_today(city, target) >= MAX_BETS_PER_CITY:
                 counts["SKIP_LIMIT"] += 1
                 log_scan(city, target, days_out, fc, "SKIP_LIMIT",
                          f"Already have {MAX_BETS_PER_CITY} bet(s) for {city} on {target}")
                 continue
 
-            # Get markets
+            # ── GET MARKETS ──────────────────────────────────────────
             try:
                 data = requests.get(f"{GAMMA}/events",
                     params={"slug": event_slug}, timeout=15).json()
@@ -534,17 +346,14 @@ def run_scan():
                 log_scan(city, target, days_out, fc, "SKIP_NOMARKET", f"API error: {e}")
                 continue
 
-            if not data or not isinstance(data, list) or not data:
+            if not data or not isinstance(data, list) or not data[0].get("markets"):
                 counts["SKIP_NOMARKET"] += 1
                 log_scan(city, target, days_out, fc, "SKIP_NOMARKET", "No market found")
                 continue
 
             markets = data[0].get("markets", [])
 
-            # ── LOG ALL PRICES every scan (price history) ──────────────
-            log_prices(city, target, days_out, fc, markets)
-
-            # Evaluate every range, find best edge
+            # ── FIND BEST EDGE ────────────────────────────────────────
             best_edge = None
             best_m    = None
             best_ed   = None
@@ -573,20 +382,19 @@ def run_scan():
                              market_id=mid, question=question, price_c=price_c)
                     continue
 
-                # Calculate edge (includes direction check)
+                # Edge calculation (includes direction check)
                 ed = calculate_edge(question, consensus, unit, city, price_c)
 
                 if ed is None:
                     lo, hi, direction = parse_range(question, unit)
                     if lo is None:
-                        counts["SKIP_PARSE"] += 1
                         log_scan(city, target, days_out, fc, "SKIP_PARSE",
                                  "Could not parse range",
                                  market_id=mid, question=question, price_c=price_c)
                     else:
                         counts["SKIP_DIRECTION"] += 1
                         log_scan(city, target, days_out, fc, "SKIP_DIRECTION",
-                                 f"Direction inconsistent: corrected={corrected:.1f}{unit} "
+                                 f"Direction inconsistent: corrected={consensus - cfg['bias']:.1f}{unit} "
                                  f"range={lo}-{hi} dir={direction}",
                                  market_id=mid, question=question, price_c=price_c)
                     continue
@@ -597,10 +405,10 @@ def run_scan():
                 log_scan(city, target, days_out, fc,
                          f"EDGE_{edge:+.0%}",
                          f"true={ed['true_prob']:.1%} mkt={ed['market_prob']:.1%} "
-                         f"edge={edge:+.1%} corrected={corrected:.1f}{unit} dir={ed['direction']}",
+                         f"edge={edge:+.1%} corrected={ed['corrected']:.1f}{unit} dir={ed['direction']}",
                          market_id=mid, question=question, price_c=price_c)
 
-                # Never bet a range with negative edge
+                # Hard filter: never bet negative edge
                 if edge < 0:
                     continue
 
@@ -611,120 +419,27 @@ def run_scan():
                     best_m["_price_c"]  = price_c
                     best_m["_question"] = question
 
-            # ── MULTI-RANGE BETTING (5 ranges, bias-corrected) ──────────
-            if MULTI_RANGE_ENABLED:
-                selected_ranges, total_cost_c = select_multi_ranges(
-                    corrected, unit, markets, city
-                )
-
-                if len(selected_ranges) < 3:
-                    # Not enough ranges for multi — fall through to single range logic below
-                    log_scan(city, target, days_out, fc, "SKIP_NOEDGE",
-                             f"Multi-range: only {len(selected_ranges)} ranges available (<3), checking single range",
-                             market_id=best_m["id"] if best_m else None,
-                             question=best_m["_question"] if best_m else None,
-                             price_c=total_cost_c)
-                    # ── SINGLE RANGE FALLBACK when multi-range fails ──
-                    # If best single range has strong edge (>=25%), take it
-                    SINGLE_FALLBACK_EDGE = 0.25
-                    if best_m and best_edge is not None and best_edge >= SINGLE_FALLBACK_EDGE:
-                        if bets_today(city, target) < MAX_BETS_PER_CITY:
-                            bet_size = get_bet_size(best_edge)
-                            trade_id = place_trade(
-                                city, target, days_out, fc,
-                                best_m["id"], best_m["_question"], best_m["_price_c"],
-                                best_ed, bet_size
-                            )
-                            if trade_id:
-                                placed += 1
-                                counts["BUY"] += 1
-                                if city not in bought:
-                                    bought.append(city)
-                                log_scan(city, target, days_out, fc, "BUY_SINGLE",
-                                         f"Single fallback: edge={best_edge:+.1%} >= {SINGLE_FALLBACK_EDGE:.0%} "
-                                         f"corrected={corrected:.1f}{unit}",
-                                         market_id=best_m["id"],
-                                         question=best_m["_question"],
-                                         price_c=best_m["_price_c"],
-                                         trade_id=trade_id)
-                    time.sleep(0.3)
-                    continue
-                else:
-                    ranges_desc = ", ".join([f"{r['lo']}-{r['hi']}F@{r['price_c']}¢"
-                                            for r in selected_ranges])
-                    print(f"  [MULTI] {city} {date_str} | {len(selected_ranges)} ranges "
-                          f"| total={total_cost_c}¢ | corrected={corrected:.1f}{unit}")
-                    print(f"    ranges: {ranges_desc}")
-
-                    multi_placed = 0
-                    for r in selected_ranges:
-                        # Multi-range: calculate true_prob for all ranges regardless of
-                        # direction filter. We're covering both sides intentionally.
-                        lo_r, hi_r, _ = parse_range(r["question"], unit)
-                        tp_r = true_probability(
-                            lo_r or 0, hi_r or 0, consensus, acc["bias"], acc["std"]
-                        ) if lo_r is not None else 0.0
-                        ed = calculate_edge(r["question"], consensus, unit, city, r["price_c"])
-                        if ed is None:
-                            # Outer ranges blocked by direction filter — expected for multi-range
-                            ed = {
-                                "true_prob":   round(tp_r, 4),
-                                "market_prob": round(r["price_c"] / 100, 4),
-                                "edge":        round(tp_r - r["price_c"] / 100, 4),
-                                "bias":        acc["bias"],
-                                "std":         acc["std"],
-                            }
-
-                        trade_id = place_trade(
-                            city, target, days_out, fc,
-                            r["market"]["id"], r["question"], r["price_c"],
-                            ed, MULTI_RANGE_BET
-                        )
-                        if trade_id:
-                            multi_placed += 1
-                            placed += 1
-                            counts["BUY"] += 1
-                            log_scan(city, target, days_out, fc, "BUY_MULTI",
-                                     f"multi-range {r['lo']}-{r['hi']}F "
-                                     f"cost={r['price_c']}¢ total_cost={total_cost_c}¢ "
-                                     f"corrected={corrected:.1f}{unit} "
-                                     f"ranges={len(selected_ranges)}",
-                                     market_id=r["market"]["id"],
-                                     question=r["question"],
-                                     price_c=r["price_c"],
-                                     trade_id=trade_id)
-
-                    if multi_placed > 0 and city not in bought:
-                        bought.append(city)
-
-                time.sleep(0.3)
-                continue
-
-            # ── SINGLE RANGE FALLBACK (if multi-range disabled) ──────────
+            # ── EDGE THRESHOLD ────────────────────────────────────────
             if best_edge is None:
                 continue
 
-            # Per-city edge minimum based on forecast accuracy
-            if city == "NYC":
-                city_min_edge = MIN_EDGE_NYC   # 53% accuracy — needs 25%+ edge
-            elif city == "Dallas":
-                city_min_edge = MIN_EDGE_DAL   # 65.5% accuracy — needs 25%+ edge
-            else:
-                city_min_edge = MIN_EDGE       # Atlanta 76.7% — 20% sufficient
-            if best_edge < city_min_edge:
+            # Hard minimum — no exceptions
+            min_edge = cfg["min_edge"]
+            if best_edge < min_edge:
                 counts["SKIP_NOEDGE"] += 1
                 log_scan(city, target, days_out, fc, "SKIP_NOEDGE",
-                         f"Best edge {best_edge:+.1%} < {city_min_edge:.0%} minimum ({city})",
+                         f"Best edge {best_edge:+.1%} < {min_edge:.0%} minimum for {city}",
                          market_id=best_m["id"],
                          question=best_m["_question"],
                          price_c=best_m["_price_c"])
                 continue
 
-            bet_size = get_bet_size(best_edge)
+            # ── PLACE BET ─────────────────────────────────────────────
+            # Flat $10 — no scaling until 30+ clean trades proven
             trade_id = place_trade(
                 city, target, days_out, fc,
                 best_m["id"], best_m["_question"], best_m["_price_c"],
-                best_ed, bet_size
+                best_ed, BASE_BET
             )
 
             if trade_id:
@@ -733,15 +448,15 @@ def run_scan():
                 if city not in bought:
                     bought.append(city)
                 log_scan(city, target, days_out, fc, "BUY",
-                         f"edge={best_edge:+.1%} corrected={corrected:.1f}{unit} "
+                         f"edge={best_edge:+.1%} corrected={best_ed['corrected']:.1f}{unit} "
                          f"true={best_ed['true_prob']:.1%} mkt={best_ed['market_prob']:.1%} "
-                         f"bet=${bet_size} dir={best_ed['direction']}",
+                         f"bet=${BASE_BET}",
                          market_id=best_m["id"],
                          question=best_m["_question"],
                          price_c=best_m["_price_c"],
                          trade_id=trade_id)
                 print(f"  [BUY] {city} {date_str} | {best_m['_question'][:60]} | "
-                      f"edge={best_edge:+.1%} | ${bet_size}")
+                      f"edge={best_edge:+.1%} | ${BASE_BET}")
             else:
                 counts["SKIP_DUPLICATE"] += 1
 
@@ -759,6 +474,7 @@ def run_scan():
 
 # ─────────────────────────────────────────────
 # OUTCOME CHECKING
+# Fixed: now catches stale bets where target_date has passed
 # ─────────────────────────────────────────────
 
 def check_outcomes():
@@ -767,6 +483,7 @@ def check_outcomes():
     c.execute("""
         SELECT id, market_id, entry_price, bet_size, city, target_date
         FROM paper_trades WHERE outcome IS NULL
+        ORDER BY target_date ASC
     """)
     pending = c.fetchall()
     conn.close()
@@ -775,6 +492,7 @@ def check_outcomes():
         return 0
 
     resolved = 0
+    today = date.today()
     print(f"[OUTCOMES] Checking {len(pending)} pending trades...")
 
     for row in pending:
@@ -784,6 +502,16 @@ def check_outcomes():
         size  = row["bet_size"] or 10.0
         city  = row["city"]
         tdate = row["target_date"]
+
+        # Stale check — if target date has passed, force resolution attempt
+        try:
+            target_dt = date.fromisoformat(str(tdate)[:10])
+            days_since = (today - target_dt).days
+            if days_since < 0:
+                # Future bet — skip, market hasn't resolved yet
+                continue
+        except Exception:
+            pass
 
         try:
             r = requests.get(f"{GAMMA}/markets/{mid}",
@@ -802,12 +530,17 @@ def check_outcomes():
             elif len(prices) > 1 and str(prices[1]) in ["1", "1.0"]:
                 outcome = "No"
 
+            # If still unresolved but stale (2+ days old), mark as No
+            if not outcome and days_since >= 2:
+                outcome = "No"
+                print(f"  ⚠️  Force-resolving stale bet id={tid} {city} {tdate} (2+ days old)")
+
             if not outcome:
                 continue
 
             pnl = round(size * (1.0 / entry - 1.0), 2) if outcome == "Yes" else -size
 
-            # Fetch actual WU temperature for this city/date
+            # Fetch WU actual temperature
             wu_actual = None
             try:
                 from forecast_logger import fetch_wu_temp
@@ -826,14 +559,18 @@ def check_outcomes():
             conn2.close()
 
             icon = "✅" if outcome == "Yes" else "❌"
-            print(f"  {icon} {city} {tdate} | {outcome} | ${pnl:.2f}")
+            print(f"  {icon} id={tid} {city} {tdate} | {outcome} | ${pnl:.2f} | wu={wu_actual}")
             resolved += 1
             time.sleep(0.2)
 
         except Exception as e:
-            print(f"  [ERR] {mid}: {e}")
+            print(f"  [ERR] id={tid} {mid}: {e}")
 
     return resolved
+
+
+def check_pending_outcomes():
+    return check_outcomes()
 
 
 # ─────────────────────────────────────────────
@@ -885,9 +622,9 @@ def get_performance():
     trades = [dict(r) for r in c.fetchall()]
     conn.close()
 
-    wins    = s["wins"] or 0
-    losses  = s["losses"] or 0
-    wr      = round(wins / (wins + losses) * 100, 1) if (wins + losses) > 0 else 0
+    wins   = s["wins"] or 0
+    losses = s["losses"] or 0
+    wr     = round(wins / (wins + losses) * 100, 1) if (wins + losses) > 0 else 0
 
     return {
         "total_trades":  s["total"] or 0,
@@ -900,24 +637,3 @@ def get_performance():
         "by_city":       by_city,
         "trades":        trades,
     }
-
-
-def get_scan_log(limit=200):
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("SELECT * FROM scan_log ORDER BY id DESC LIMIT %s", (limit,))
-    rows = [dict(r) for r in c.fetchall()]
-    conn.close()
-    return rows
-
-
-# Stubs for backward compat with server.py imports
-def init_tables(): pass
-def run_morning_session(): return run_scan()
-def run_evening_session(): return check_outcomes()
-def check_pending_outcomes(): return check_outcomes()
-
-
-if __name__ == "__main__":
-    n, summary = run_scan()
-    print(f"\nSummary: {summary}")
