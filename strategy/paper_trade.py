@@ -573,6 +573,11 @@ def check_pending_outcomes():
     return check_outcomes()
 
 
+def init_tables():
+    """No-op — tables initialized in database.py. Kept for server.py compatibility."""
+    pass
+
+
 # ─────────────────────────────────────────────
 # REPORTING
 # ─────────────────────────────────────────────
@@ -637,3 +642,32 @@ def get_performance():
         "by_city":       by_city,
         "trades":        trades,
     }
+
+
+def run_morning_session():
+    """No-op stub — morning session handled by scheduler directly."""
+    pass
+
+
+def run_evening_session():
+    """No-op stub — evening session handled by scheduler directly."""
+    pass
+
+
+def get_scan_log(limit=200):
+    """Return recent scan log entries."""
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("""
+            SELECT scanned_at, city, target_date, days_out,
+                   gfs_temp, ukmo_temp, mf_temp, consensus, spread, unit,
+                   decision, reason, market_id, question, price_c, trade_id
+            FROM scan_log ORDER BY id DESC LIMIT %s
+        """, (limit,))
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+        return rows
+    except Exception as e:
+        print(f"[GET_SCAN_LOG ERR] {e}")
+        return []
