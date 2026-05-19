@@ -30,7 +30,7 @@ from datetime import datetime, date, timedelta
 from data.database import get_conn
 
 GAMMA      = "https://gamma-api.polymarket.com"
-EST_OFFSET = -5
+EST_OFFSET = -4  # EDT (Eastern Daylight Time) — UTC-4 in summer, UTC-5 in winter
 
 # ─────────────────────────────────────────────
 # CITY CONFIG — audit-justified parameters
@@ -194,8 +194,12 @@ def calculate_edge(question, consensus, unit, city, price_c):
 # ─────────────────────────────────────────────
 
 def est_str():
-    from datetime import timezone, timedelta
-    return datetime.now(timezone(timedelta(hours=EST_OFFSET))).strftime("%Y-%m-%d %I:%M %p EST")
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %I:%M %p EST")
+    except ImportError:
+        from datetime import timezone, timedelta
+        return datetime.now(timezone(timedelta(hours=-4))).strftime("%Y-%m-%d %I:%M %p EST")
 
 
 def log_scan(city, target, days_out, fc, decision, reason,
