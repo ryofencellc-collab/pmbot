@@ -175,7 +175,7 @@ def run_scheduler():
                     from datetime import datetime, timezone as _tz, timedelta as _td
                     result = get_early_signals()
                     signals = result[0] if isinstance(result, tuple) else result
-                    est_now = datetime.now(_tz(_td(hours=-5))).strftime("%Y-%m-%d %I:%M %p EST")
+                    est_now = datetime.now(_tz(_td(hours=-4))).strftime("%Y-%m-%d %I:%M %p EST")
                     conn2 = get_conn()
                     c2 = conn2.cursor()
                     c2.execute("""INSERT INTO cache (key, value, updated_at) VALUES ('early_signals', %s, %s)
@@ -202,7 +202,7 @@ def run_scheduler():
                     )
                 """)
                 from datetime import datetime, timezone as _tz, timedelta as _td
-                est_now = datetime.now(_tz(_td(hours=-5))).strftime("%Y-%m-%d %I:%M %p EST")
+                est_now = datetime.now(_tz(_td(hours=-4))).strftime("%Y-%m-%d %I:%M %p EST")
                 c.execute("""
                     INSERT INTO cache (key, value, updated_at)
                     VALUES ('city_cards', %s, %s)
@@ -677,7 +677,7 @@ def market_times():
     """
     try:
         from datetime import datetime, timezone, timedelta
-        EST = timezone(timedelta(hours=-5))
+        EST = timezone(timedelta(hours=-4))
 
         conn = get_conn()
         c    = conn.cursor()
@@ -846,7 +846,7 @@ def early_signals(refresh: bool = False):
             result = get_early_signals()
             signals = result[0] if isinstance(result, tuple) else result
             from datetime import datetime, timezone as _tz, timedelta as _td
-            est_now = datetime.now(_tz(_td(hours=-5))).strftime("%Y-%m-%d %I:%M %p EST")
+            est_now = datetime.now(_tz(_td(hours=-4))).strftime("%Y-%m-%d %I:%M %p EST")
             conn = get_conn()
             c = conn.cursor()
             c.execute("""
@@ -1047,7 +1047,7 @@ def market_times():
     """
     try:
         from datetime import datetime, timezone, timedelta
-        EST = timezone(timedelta(hours=-5))
+        EST = timezone(timedelta(hours=-4))
 
         conn = get_conn()
         c    = conn.cursor()
@@ -1698,7 +1698,7 @@ def market_times():
     """
     try:
         from datetime import datetime, timezone, timedelta
-        EST = timezone(timedelta(hours=-5))
+        EST = timezone(timedelta(hours=-4))
 
         conn = get_conn()
         c    = conn.cursor()
@@ -2152,7 +2152,7 @@ def city_cards_endpoint(days_out: int = 4, refresh: bool = False):
         from city_cards import get_all_city_cards
         from datetime import datetime, timezone as _tz, timedelta as _td
         cards   = get_all_city_cards(days_out=days_out)
-        est_now = datetime.now(_tz(_td(hours=-5))).strftime("%Y-%m-%d %I:%M %p EST")
+        est_now = datetime.now(_tz(_td(hours=-4))).strftime("%Y-%m-%d %I:%M %p EST")
 
         # Save to cache
         try:
@@ -2668,7 +2668,7 @@ def diagnostics():
     """
     import time as _time
     from datetime import datetime, timezone, timedelta
-    EST = timezone(timedelta(hours=-5))
+    EST = timezone(timedelta(hours=-4))
     now_est = datetime.now(EST)
 
     out = {}
@@ -3961,7 +3961,7 @@ def market_open_times():
     to find the exact pattern of when markets open.
     """
     from datetime import timezone, timedelta
-    EST = timezone(timedelta(hours=-5))
+    EST = timezone(timedelta(hours=-4))
 
     try:
         conn = get_conn()
