@@ -44,11 +44,12 @@ CITY_CONFIG = {
         "lat":      33.749,
         "lon":      -84.388,
         "unit":     "F",
-        "bias":     0.5,    # 75-81°F range: model slightly high, conservative correction
-        "std":      1.1,    # avg_err=1.1°F in proven range
-        "min_temp": 75,     # HARD FLOOR — do not bet below this
-        "max_temp": 81,     # HARD CEILING — do not bet above this
-        # Audit finding: 75-81°F = 75% accuracy. Below 75°F = 55%. Above 82°F = 50%.
+        "bias":     1.0,    # Backtest: 80-85°F range bias=-1.18°F avg, use -1.0
+        "std":      1.5,    # Backtest grid search optimal std for 80-85°F range
+        "min_temp": 80,     # Backtest: 80-85°F = 70% accuracy n=10 ← proven range
+        "max_temp": 85,     # Backtest: above 85°F model breaks down
+        # Backtest finding: 80-85°F = 70% acc n=10 bias=-1.18°F
+        # Grid search: bias=-1.0 std=1.5 edge≥25% → profitable
         "min_edge": 0.25,
         "tradeable": True,
     },
@@ -57,17 +58,32 @@ CITY_CONFIG = {
         "lat":      32.776,
         "lon":      -96.797,
         "unit":     "F",
-        "bias":     0.4,    # 87°F+ range: model slightly high
-        "std":      1.3,    # avg_err=1.3°F in proven range
-        "min_temp": 87,     # HARD FLOOR — only bet hot Dallas days
-        "max_temp": 999,    # No ceiling — model holds above 87°F
-        # Audit finding: 87°F+ = 78% accuracy. Below 87°F = 44-50%.
+        "bias":     0.0,    # Backtest: 80-85°F bias=-0.43°F avg, use 0.0
+        "std":      1.2,    # Backtest grid search optimal std for 80-85°F range
+        "min_temp": 80,     # Backtest: 80-85°F = 85.7% acc n=7 ← proven range
+        "max_temp": 85,     # Backtest: 85-90°F drops to 57% — stop here
+        # Backtest finding: 80-85°F = 85.7% acc n=7 bias=-0.43°F
+        # Grid search: bias=0.0 std=0.8 edge≥20% profitable
+        # NOTE: 87°F+ was old config — had 2 massive misses May 19 & 22
         "min_edge": 0.25,
         "tradeable": True,
     },
-    # NYC: 64.3% accuracy — do not trade
-    # Chicago: 37.9% — never trade
-    # Seattle: 35.7% — never trade
+    "NYC": {
+        "slug":     "nyc",
+        "lat":      40.713,
+        "lon":      -74.006,
+        "unit":     "F",
+        "bias":     -1.25,  # Backtest: <70°F range bias=+1.25°F → correct by -1.25
+        "std":      1.5,    # Conservative std for NYC
+        "min_temp": -999,   # No floor — trade all cold days
+        "max_temp": 70,     # HARD CEILING — only bet when forecast below 70°F
+        # Backtest finding: <70°F = 75% accuracy n=24 bias=+1.25°F ← BEST DATASET
+        # Model consistently runs high on cold NYC days — correct with -1.25 bias
+        "min_edge": 0.25,
+        "tradeable": True,
+    },
+    # Chicago: 44.8% — never trade
+    # Seattle: 44.4% — never trade
     # Denver/London/Shanghai/Singapore: collecting data, not yet tradeable
 }
 
