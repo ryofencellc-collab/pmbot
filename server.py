@@ -654,18 +654,7 @@ def debug_full():
 
 # ── Backtest ─────────────────────────────────────────────────────────────────
 
-@app.get("/backtest")
-def run_backtest():
-    """
-    Simulate 30 days using WU actual temps as proxy forecast.
-    Fast but uses simulated forecasts.
-    """
-    try:
-        from strategy.backtest import run_backtest as _run
-        result = _run()
-        return result
-    except Exception as e:
-        return {"error": str(e)}
+# old /backtest endpoint removed — replaced by new comprehensive backtest above
 
 
 @app.get("/market-times")
