@@ -2460,296 +2460,277 @@ def weekly_summary():
 @app.get("/backtest")
 def run_backtest():
     """
-    Full backtest using real historical data.
-    - Pulls 90 days of Open-Meteo 1-day and 2-day ahead forecasts
-    - Compares against WU actuals in wu_temps table
-    - Tests all combinations of edge threshold, spread, temp range, bias
-    - Returns optimal parameters per city
+    Full backtest using real data from our database.
+    Uses forecast_log table (daily forecasts we've been logging)
+    vs wu_temps table (WU actual temperatures).
+    Tests every combination of bias, std, edge threshold, temp range.
+    Returns the exact parameters that maximize expected value.
     """
-    import requests as req
-    from datetime import date, timedelta
-    import math, itertools
+    import math
 
-    END_DATE   = date.today()
-    START_DATE = END_DATE - timedelta(days=90)
-
-    CITIES = {
-        "Atlanta": {"lat": 33.749, "lon": -84.388, "unit": "fahrenheit", "wu_unit": "F"},
-        "Dallas":  {"lat": 32.776, "lon": -96.797, "unit": "fahrenheit", "wu_unit": "F"},
-    }
-
-    # ── Step 1: Get WU actuals from DB ──
-    wu_actuals = {}
+    # ── 1. Pull WU actuals ──
+    wu = {}
     try:
         conn = get_conn()
         c = conn.cursor()
-        for city in CITIES:
-            c.execute("""
-                SELECT date, max_temp_f FROM wu_temps
-                WHERE city=%s AND date >= %s AND date <= %s
-                ORDER BY date
-            """, (city, str(START_DATE), str(END_DATE)))
-            rows = c.fetchall()
-            wu_actuals[city] = {row["date"]: row["max_temp_f"] for row in rows}
+        c.execute("""
+            SELECT city, date, max_temp_f
+            FROM wu_temps
+            WHERE city IN ('Atlanta', 'Dallas', 'NYC', 'Chicago', 'Seattle',
+                          'London', 'Shanghai', 'Singapore', 'Denver')
+            ORDER BY city, date
+        """)
+        for row in c.fetchall():
+            wu.setdefault(row["city"], {})[str(row["date"])[:10]] = float(row["max_temp_f"])
         conn.close()
     except Exception as e:
-        return {"error": f"DB error: {e}"}
+        return {"error": f"WU fetch error: {e}"}
 
-    # ── Step 2: Pull Open-Meteo historical forecasts ──
-    forecasts = {}  # city -> date -> {gfs, ukmo, mf, consensus, spread}
+    # ── 2. Pull forecast log ──
+    fc_log = {}
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        # Check if forecast_log table exists
+        c.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'forecast_log'
+            LIMIT 1
+        """)
+        has_fc_log = c.fetchone() is not None
 
-    for city, cfg in CITIES.items():
-        forecasts[city] = {}
-        try:
-            # Get full 90-day history with past_days
-            r = req.get(
-                "https://api.open-meteo.com/v1/forecast",
-                params={
-                    "latitude":         cfg["lat"],
-                    "longitude":        cfg["lon"],
-                    "daily":            "temperature_2m_max",
-                    "temperature_unit": cfg["unit"],
-                    "timezone":         "America/New_York",
-                    "past_days":        90,
-                    "forecast_days":    1,
-                    "models":           "gfs_seamless,ukmo_seamless,meteofrance_seamless",
-                },
-                timeout=20,
-                headers={"User-Agent": "PolyEdge/1.0"}
-            )
-            if r.status_code != 200:
-                continue
-
-            data = r.json()
-
-            # Extract per-model forecasts
-            dates = data.get("daily", {}).get("time", [])
-
-            # Try to get individual model data
-            gfs_temps  = data.get("daily", {}).get("temperature_2m_max", [])
-            # If multi-model not available, use single model
-            for i, d in enumerate(dates):
-                if i < len(gfs_temps) and gfs_temps[i] is not None:
-                    forecasts[city][d] = {
-                        "consensus": gfs_temps[i],
-                        "spread": 0.0,  # single model — no spread
+        if has_fc_log:
+            c.execute("""
+                SELECT city, target_date, gfs_temp, ukmo_temp, mf_temp,
+                       consensus, spread, logged_at
+                FROM forecast_log
+                WHERE city IN ('Atlanta', 'Dallas', 'NYC')
+                ORDER BY city, target_date, logged_at
+            """)
+            for row in c.fetchall():
+                key = (row["city"], str(row["target_date"])[:10])
+                # Keep the earliest forecast for each city/date (most predictive)
+                if key not in fc_log:
+                    fc_log[key] = {
+                        "gfs":      row["gfs_temp"],
+                        "ukmo":     row["ukmo_temp"],
+                        "mf":       row["mf_temp"],
+                        "consensus": row["consensus"],
+                        "spread":   row["spread"],
                     }
+        conn.close()
+    except Exception as e:
+        pass  # forecast_log may not exist yet
 
-        except Exception as e:
-            forecasts[city]["_error"] = str(e)
+    # ── 3. Build comparison dataset from scan_log ──
+    # scan_log has forecast data for every scan — use this as our forecast source
+    scan_forecasts = {}
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("""
+            SELECT city, target_date,
+                   AVG(gfs_temp) as gfs, AVG(ukmo_temp) as ukmo,
+                   AVG(mf_temp) as mf, AVG(consensus) as consensus,
+                   AVG(spread) as spread,
+                   MIN(scanned_at) as first_scan
+            FROM scan_log
+            WHERE gfs_temp IS NOT NULL
+            AND city IN ('Atlanta', 'Dallas', 'NYC')
+            GROUP BY city, target_date
+            ORDER BY city, target_date
+        """)
+        for row in c.fetchall():
+            key = (row["city"], str(row["target_date"])[:10])
+            scan_forecasts[key] = {
+                "gfs":      row["gfs"],
+                "ukmo":     row["ukmo"],
+                "mf":       row["mf"],
+                "consensus": row["consensus"],
+                "spread":   row["spread"],
+                "first_scan": row["first_scan"],
+            }
+        conn.close()
+    except Exception as e:
+        return {"error": f"Scan log error: {e}"}
 
-    # ── Step 3: Build comparison dataset ──
-    # For each city, for each day, match forecast vs actual
-    comparison = {}
-
-    for city in CITIES:
-        comparison[city] = []
-        city_forecasts = forecasts.get(city, {})
-        city_actuals   = wu_actuals.get(city, {})
-
-        for d_str, fc in city_forecasts.items():
-            if d_str.startswith("_"):
-                continue
-            actual = city_actuals.get(d_str)
-            if actual is None:
-                continue
-
-            forecast_temp = fc["consensus"]
-            error = abs(forecast_temp - actual)
-            correct_1f = error <= 1.0  # within 1 degree
-            correct_2f = error <= 2.0  # within 2 degrees
-
-            comparison[city].append({
-                "date":         d_str,
-                "forecast":     round(forecast_temp, 1),
-                "actual":       actual,
-                "error":        round(error, 1),
-                "correct_1f":   correct_1f,
-                "correct_2f":   correct_2f,
-                "bias":         round(forecast_temp - actual, 1),
-            })
-
-        comparison[city].sort(key=lambda x: x["date"])
-
-    # ── Step 4: Range analysis per city ──
-    range_analysis = {}
-
-    for city in CITIES:
-        data_points = comparison.get(city, [])
-        if not data_points:
-            range_analysis[city] = {"error": "no data"}
+    # ── 4. Build matched dataset ──
+    matched = {}
+    for (city, date_str), fc in scan_forecasts.items():
+        actual = wu.get(city, {}).get(date_str)
+        if actual is None:
+            continue
+        if fc["consensus"] is None:
             continue
 
-        # Define temperature ranges to test
-        ranges_to_test = [
-            ("all",    -999, 999),
-            ("<70",    -999,   70),
-            ("70-75",    70,   75),
-            ("75-80",    75,   80),
-            ("80-85",    80,   85),
-            ("85-90",    85,   90),
-            ("90+",      90,  999),
-            ("75-85",    75,   85),  # wider range
-            ("80-90",    80,   90),  # different range
-        ]
+        matched.setdefault(city, []).append({
+            "date":      date_str,
+            "forecast":  round(float(fc["consensus"]), 1),
+            "gfs":       round(float(fc["gfs"]), 1) if fc["gfs"] else None,
+            "ukmo":      round(float(fc["ukmo"]), 1) if fc["ukmo"] else None,
+            "spread":    round(float(fc["spread"]), 1) if fc["spread"] else 0,
+            "actual":    float(actual),
+            "error":     round(abs(float(fc["consensus"]) - float(actual)), 1),
+            "bias_raw":  round(float(fc["consensus"]) - float(actual), 1),
+        })
 
-        range_results = {}
-        for label, lo, hi in ranges_to_test:
-            subset = [d for d in data_points if lo <= d["actual"] < hi]
-            if len(subset) < 5:
-                continue
-
-            n = len(subset)
-            acc_1f = round(sum(1 for d in subset if d["correct_1f"]) / n * 100, 1)
-            acc_2f = round(sum(1 for d in subset if d["correct_2f"]) / n * 100, 1)
-            avg_err = round(sum(d["error"] for d in subset) / n, 2)
-            avg_bias = round(sum(d["bias"] for d in subset) / n, 2)
-            std_err = round(math.sqrt(sum((d["error"] - avg_err)**2 for d in subset) / n), 2)
-
-            range_results[label] = {
-                "n":        n,
-                "lo":       lo,
-                "hi":       hi,
-                "acc_1f":   acc_1f,
-                "acc_2f":   acc_2f,
-                "avg_err":  avg_err,
-                "avg_bias": avg_bias,
-                "std_err":  std_err,
-                "tradeable": acc_2f >= 65 and n >= 10,
-            }
-
-        # Overall stats
-        n_total = len(data_points)
-        overall_acc = round(sum(1 for d in data_points if d["correct_2f"]) / n_total * 100, 1)
-        overall_bias = round(sum(d["bias"] for d in data_points) / n_total, 2)
-        overall_std = round(math.sqrt(sum(d["error"]**2 for d in data_points) / n_total), 2)
-
-        range_analysis[city] = {
-            "n_total":      n_total,
-            "overall_acc":  overall_acc,
-            "overall_bias": overall_bias,
-            "overall_std":  overall_std,
-            "ranges":       range_results,
-            "raw_data":     data_points[-30:],  # last 30 for inspection
+    if not matched:
+        return {
+            "error": "No matched forecast+actual data found",
+            "wu_cities": list(wu.keys()),
+            "wu_counts": {c: len(v) for c, v in wu.items()},
+            "scan_forecasts_count": len(scan_forecasts),
+            "note": "Need forecast data in scan_log that matches wu_temps dates"
         }
 
-    # ── Step 5: Simulate betting with different parameters ──
-    simulation_results = {}
+    # ── 5. Range analysis ──
+    def cdf(x):
+        a1,a2,a3,a4,a5 = 0.254829592,-0.284496736,1.421413741,-1.453152027,1.061405429
+        p = 0.3275911
+        sign = 1 if x >= 0 else -1
+        x = abs(x)
+        t = 1.0/(1.0+p*x)
+        return 0.5*(1-sign*(((((a5*t+a4)*t)+a3)*t+a2)*t+a1)*t*math.exp(-x*x))
 
-    for city in CITIES:
-        data_points = comparison.get(city, [])
-        if not data_points:
+    def true_prob(lo, hi, consensus, bias, std):
+        corrected = consensus - bias
+        if hi >= 999: return 1.0 - cdf((lo - corrected)/std)
+        if lo <= -999: return cdf((hi+1-corrected)/std)
+        return cdf((hi+1-corrected)/std) - cdf((lo-corrected)/std)
+
+    results = {}
+
+    for city, data in matched.items():
+        data.sort(key=lambda x: x["date"])
+        n_total = len(data)
+        if n_total < 5:
+            results[city] = {"error": f"only {n_total} matched points"}
             continue
 
-        # Test parameter combinations
-        best_ev = None
-        best_params = None
-        sim_results = []
+        # Overall stats
+        avg_bias = round(sum(d["bias_raw"] for d in data) / n_total, 2)
+        avg_err  = round(sum(d["error"] for d in data) / n_total, 2)
+        std_err  = round(math.sqrt(sum(d["error"]**2 for d in data) / n_total), 2)
+        acc_2f   = round(sum(1 for d in data if d["error"] <= 2.0) / n_total * 100, 1)
 
-        # Edge thresholds to test
-        edge_thresholds = [0.15, 0.20, 0.25, 0.30, 0.35]
-        # Temp ranges to test (actual temp ranges)
-        temp_ranges = [
-            ("75-80", 75, 80),
-            ("75-85", 75, 85),
-            ("80-85", 80, 85),
-            ("80-90", 80, 90),
-            ("85-90", 85, 90),
-            ("all",   50, 110),
+        # Range breakdown
+        ranges = [
+            ("all",   -999, 999),
+            ("<70F",  -999,  70),
+            ("70-75",   70,  75),
+            ("75-80",   75,  80),
+            ("80-85",   80,  85),
+            ("85-90",   85,  90),
+            ("90+F",    90, 999),
         ]
-        # Bias values to test
-        bias_values = [-2.0, -1.0, 0.0, 0.5, 1.0, 1.5, 2.0]
 
-        for t_label, t_lo, t_hi in temp_ranges:
-            subset = [d for d in data_points if t_lo <= d["actual"] < t_hi]
-            if len(subset) < 10:
+        range_stats = {}
+        for label, lo, hi in ranges:
+            sub = [d for d in data if lo <= d["actual"] < hi]
+            if len(sub) < 3:
+                continue
+            n = len(sub)
+            b = round(sum(d["bias_raw"] for d in sub)/n, 2)
+            e = round(sum(d["error"] for d in sub)/n, 2)
+            s = round(math.sqrt(sum(d["error"]**2 for d in sub)/n), 2)
+            a = round(sum(1 for d in sub if d["error"] <= 2.0)/n*100, 1)
+            range_stats[label] = {
+                "n": n, "bias": b, "avg_err": e,
+                "std": s, "acc_2f": a,
+                "tradeable": a >= 65 and n >= 8,
+            }
+
+        # ── 6. Grid search: best bias + std per city/range ──
+        best_configs = []
+        bias_vals = [-2.0,-1.5,-1.0,-0.5, 0.0, 0.5, 1.0, 1.5, 2.0]
+        std_vals  = [0.8, 1.0, 1.2, 1.5, 1.8, 2.0, 2.5]
+        edge_mins = [0.20, 0.25, 0.30, 0.35]
+        spread_maxes = [2.0, 2.5, 3.0, 3.5]
+
+        for t_label, t_lo, t_hi in ranges[1:]:  # skip "all"
+            sub = [d for d in data
+                   if t_lo <= d["actual"] < t_hi
+                   and d["spread"] is not None]
+            if len(sub) < 8:
                 continue
 
-            for bias in bias_values:
-                # Calculate what our probability model would say
-                # for each day in this range
-                wins = 0
-                bets = 0
-                expected_value = 0
+            for bias in bias_vals:
+                for std in std_vals:
+                    for edge_min in edge_mins:
+                        for spread_max in spread_maxes:
+                            bets = 0
+                            wins = 0
+                            pnl  = 0.0
 
-                for d in subset:
-                    corrected = d["forecast"] - bias
-                    actual = d["actual"]
+                            for d in sub:
+                                if d["spread"] > spread_max:
+                                    continue
 
-                    # Would we have bet on the correct range?
-                    # Simulate: we bet on the 2-degree range containing corrected
-                    bet_lo = int(corrected) if corrected >= 0 else int(corrected) - 1
-                    bet_hi = bet_lo + 2
+                                corrected = d["forecast"] - bias
+                                # Bet on the 2-degree range around corrected
+                                bet_lo = math.floor(corrected)
+                                bet_hi = bet_lo + 2
 
-                    # Did actual fall in our bet range?
-                    outcome = bet_lo <= actual < bet_hi
+                                # Skip if range outside actual range
+                                if bet_hi < t_lo or bet_lo >= t_hi:
+                                    continue
 
-                    # Estimate market price (simplified)
-                    # In reality market prices vary — use 15¢ as baseline
-                    market_price = 0.15
+                                # Calculate edge
+                                tp = true_prob(bet_lo, bet_hi, d["forecast"], bias, std)
+                                # Simulate market price based on how far off we are
+                                # Use a baseline of 15¢ for now
+                                mkt = 0.15
+                                edge = tp - mkt
 
-                    # Our true probability estimate
-                    std = 1.5  # estimated
-                    z_lo = (bet_lo - corrected) / std
-                    z_hi = (bet_hi - corrected) / std
-                    import math
-                    def cdf(x):
-                        return 0.5 * (1 + math.erf(x / math.sqrt(2)))
-                    true_prob = cdf(z_hi) - cdf(z_lo)
-                    edge = true_prob - market_price
+                                if edge < edge_min:
+                                    continue
 
-                    if edge >= 0.25:  # only bet if edge is meaningful
-                        bets += 1
-                        if outcome:
-                            wins += 1
-                            expected_value += (1/market_price - 1) * 10  # $10 bet
-                        else:
-                            expected_value -= 10
+                                bets += 1
+                                outcome = bet_lo <= d["actual"] < bet_hi
+                                if outcome:
+                                    wins += 1
+                                    pnl += (1/mkt - 1) * 10
+                                else:
+                                    pnl -= 10
 
-                if bets >= 5:
-                    win_rate = round(wins / bets * 100, 1)
-                    ev_per_bet = round(expected_value / bets, 2)
-                    sim_results.append({
-                        "temp_range": t_label,
-                        "bias": bias,
-                        "n_bets": bets,
-                        "wins": wins,
-                        "win_rate": win_rate,
-                        "total_ev": round(expected_value, 2),
-                        "ev_per_bet": ev_per_bet,
-                        "profitable": ev_per_bet > 0,
-                    })
+                            if bets >= 5:
+                                wr = round(wins/bets*100, 1)
+                                ev = round(pnl/bets, 2)
+                                if ev > 0:
+                                    best_configs.append({
+                                        "range": t_label,
+                                        "bias": bias,
+                                        "std": std,
+                                        "edge_min": edge_min,
+                                        "spread_max": spread_max,
+                                        "n_bets": bets,
+                                        "wins": wins,
+                                        "win_rate": wr,
+                                        "total_pnl": round(pnl, 2),
+                                        "ev_per_bet": ev,
+                                    })
 
-                    if best_ev is None or ev_per_bet > best_ev:
-                        best_ev = ev_per_bet
-                        best_params = {
-                            "temp_range": t_label,
-                            "bias": bias,
-                            "n_bets": bets,
-                            "win_rate": win_rate,
-                            "ev_per_bet": ev_per_bet,
-                        }
+        best_configs.sort(key=lambda x: -x["ev_per_bet"])
 
-        # Sort by EV per bet
-        sim_results.sort(key=lambda x: -x["ev_per_bet"])
-
-        simulation_results[city] = {
-            "best_params":   best_params,
-            "top_10_configs": sim_results[:10],
-            "n_configs_tested": len(sim_results),
+        results[city] = {
+            "n_matched":    n_total,
+            "date_range":   f"{data[0]['date']} to {data[-1]['date']}",
+            "overall_bias": avg_bias,
+            "overall_err":  avg_err,
+            "overall_std":  std_err,
+            "overall_acc":  acc_2f,
+            "range_stats":  range_stats,
+            "best_configs": best_configs[:10],
+            "n_profitable_configs": len(best_configs),
         }
 
     return {
-        "backtest_period": f"{START_DATE} to {END_DATE}",
-        "wu_data_available": {city: len(v) for city, v in wu_actuals.items()},
-        "forecast_data_available": {city: len([k for k in v if not k.startswith("_")]) for city, v in forecasts.items()},
-        "range_analysis": range_analysis,
-        "simulation": simulation_results,
-        "recommendation": {
-            "Atlanta": range_analysis.get("Atlanta", {}).get("ranges", {}).get("75-80", {}).get("tradeable", False),
-            "Dallas":  range_analysis.get("Dallas",  {}).get("ranges", {}).get("85-90", {}).get("tradeable", False),
-        }
+        "backtest_period": f"based on scan_log data",
+        "matched_counts": {c: len(v) for c, v in matched.items()},
+        "wu_counts": {c: len(v) for c, v in wu.items()},
+        "results": results,
     }
+
 
 @app.get("/discover-cities")
 def discover_cities():
