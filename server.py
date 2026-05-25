@@ -3124,6 +3124,297 @@ def backtest_live_temp():
     }
 
 
+
+@app.get("/backtest/reverse-engineer")
+def reverse_engineer():
+    """
+    Let the data show us the edge.
+    
+    Pull every resolved market. Split into winners (Yes) and losers (No).
+    Compare every measurable variable between the two groups.
+    Rank by separation strength — the strongest separators ARE the algorithm.
+    """
+    import math
+    from collections import defaultdict
+
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+
+        # Pull every resolved range market with all available data
+        c.execute("""
+            SELECT
+                m.id::text as market_id,
+                m.city,
+                m.target_low as lo,
+                m.target_high as hi,
+                m.outcome,
+                m.resolved_at,
+                LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10) as resolved_date,
+                EXTRACT(DOW FROM TO_TIMESTAMP(m.resolved_at)) as dow,
+                EXTRACT(MONTH FROM TO_TIMESTAMP(m.resolved_at)) as month,
+                -- WU actual (real outcome)
+                (SELECT max_temp_f FROM wu_temps w
+                 WHERE w.city = m.city
+                 AND w.date = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)
+                 LIMIT 1) as wu_actual,
+                -- Our forecast
+                (SELECT AVG(consensus) FROM scan_log sl
+                 WHERE sl.city = m.city
+                 AND sl.target_date = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)
+                 AND sl.days_out IN (1,2) AND sl.consensus IS NOT NULL) as forecast,
+                (SELECT AVG(spread) FROM scan_log sl
+                 WHERE sl.city = m.city
+                 AND sl.target_date = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)
+                 AND sl.days_out IN (1,2) AND sl.consensus IS NOT NULL) as model_spread,
+                -- Price metrics from snapshots
+                (SELECT yes_price FROM price_snapshots ps
+                 WHERE ps.market_id = m.id::text
+                 ORDER BY ps.timestamp ASC LIMIT 1) as open_price,
+                (SELECT yes_price FROM price_snapshots ps
+                 WHERE ps.market_id = m.id::text
+                 AND ps.timestamp <= m.resolved_at - 172800
+                 ORDER BY ps.timestamp DESC LIMIT 1) as price_48h,
+                (SELECT yes_price FROM price_snapshots ps
+                 WHERE ps.market_id = m.id::text
+                 AND ps.timestamp <= m.resolved_at - 86400
+                 ORDER BY ps.timestamp DESC LIMIT 1) as price_24h,
+                (SELECT yes_price FROM price_snapshots ps
+                 WHERE ps.market_id = m.id::text
+                 AND ps.timestamp <= m.resolved_at - 43200
+                 ORDER BY ps.timestamp DESC LIMIT 1) as price_12h,
+                (SELECT COUNT(*) FROM price_snapshots ps
+                 WHERE ps.market_id = m.id::text) as n_snapshots
+            FROM markets m
+            WHERE m.market_type = 'range'
+            AND m.outcome IS NOT NULL
+            AND m.city IN ('Atlanta', 'Dallas', 'NYC')
+            ORDER BY m.resolved_at DESC
+        """)
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+
+    except Exception as e:
+        return {"error": str(e)}
+
+    # Build clean dataset with real outcomes
+    winners = []  # markets where wu_actual landed in the range
+    losers  = []  # markets where wu_actual did NOT land in the range
+
+    for r in rows:
+        wu = float(r["wu_actual"]) if r["wu_actual"] else None
+        if wu is None: continue
+
+        lo = float(r["lo"])
+        hi = float(r["hi"])
+        real_win = lo <= wu < hi
+
+        fc       = float(r["forecast"]) if r["forecast"] else None
+        spread   = float(r["model_spread"]) if r["model_spread"] else None
+        open_p   = float(r["open_price"]) * 100 if r["open_price"] else None
+        p48      = float(r["price_48h"]) * 100 if r["price_48h"] else None
+        p24      = float(r["price_24h"]) * 100 if r["price_24h"] else None
+        p12      = float(r["price_12h"]) * 100 if r["price_12h"] else None
+        snaps    = int(r["n_snapshots"])
+        dow      = int(r["dow"]) if r["dow"] else None
+        month    = int(r["month"]) if r["month"] else None
+        city     = r["city"]
+        range_lo = lo
+        range_hi = hi
+        range_center = (lo + hi) / 2
+
+        entry = {
+            "city":         city,
+            "date":         r["resolved_date"],
+            "lo":           lo,
+            "hi":           hi,
+            "wu":           wu,
+            "real_win":     real_win,
+            "dow":          dow,
+            "month":        month,
+            "range_center": range_center,
+            "forecast":     fc,
+            "spread":       spread,
+            "open_price":   open_p,
+            "price_48h":    p48,
+            "price_24h":    p24,
+            "price_12h":    p12,
+            "n_snapshots":  snaps,
+            # Derived features
+            "forecast_err":   round(abs(fc - wu), 1) if fc else None,
+            "forecast_bias":  round(fc - wu, 1) if fc else None,
+            "fc_in_range":    (lo <= fc < hi) if fc else None,
+            "momentum_24h":   round(p24 - p48, 2) if p24 and p48 else None,
+            "momentum_12h":   round(p12 - p24, 2) if p12 and p24 else None,
+            "price_vs_open":  round(p24 - open_p, 2) if p24 and open_p else None,
+        }
+
+        if real_win:
+            winners.append(entry)
+        else:
+            losers.append(entry)
+
+    n_win = len(winners)
+    n_los = len(losers)
+
+    if n_win < 5:
+        return {"error": f"Not enough winners: {n_win}"}
+
+    # ── Helper: compare a variable between winners and losers ──
+    def compare(var, w_list, l_list, buckets=None):
+        w_vals = [e[var] for e in w_list if e.get(var) is not None]
+        l_vals = [e[var] for e in l_list if e.get(var) is not None]
+        if not w_vals or not l_vals:
+            return None
+
+        w_avg = round(sum(w_vals)/len(w_vals), 2)
+        l_avg = round(sum(l_vals)/len(l_vals), 2)
+        diff  = round(w_avg - l_avg, 2)
+
+        # Bucket analysis — find threshold that best separates
+        best_bucket = None
+        if buckets:
+            best_sep = 0
+            for thresh, op in buckets:
+                if op == "<":
+                    w_pct = sum(1 for v in w_vals if v < thresh) / len(w_vals)
+                    l_pct = sum(1 for v in l_vals if v < thresh) / len(l_vals)
+                else:
+                    w_pct = sum(1 for v in w_vals if v >= thresh) / len(w_vals)
+                    l_pct = sum(1 for v in l_vals if v >= thresh) / len(l_vals)
+                sep = abs(w_pct - l_pct)
+                if sep > best_sep:
+                    best_sep = sep
+                    best_bucket = {
+                        "rule": f"{var} {op} {thresh}",
+                        "winner_pct": round(w_pct*100,1),
+                        "loser_pct":  round(l_pct*100,1),
+                        "separation": round(sep*100,1),
+                    }
+
+        return {
+            "variable":    var,
+            "winner_avg":  w_avg,
+            "loser_avg":   l_avg,
+            "difference":  diff,
+            "n_winners":   len(w_vals),
+            "n_losers":    len(l_vals),
+            "best_bucket": best_bucket,
+        }
+
+    # ── Run comparisons on every variable ──
+    comparisons = []
+
+    # Spread
+    r = compare("spread", winners, losers,
+                buckets=[(1.0,"<"),(1.5,"<"),(2.0,"<"),(2.5,"<"),(3.0,"<")])
+    if r: comparisons.append(r)
+
+    # Price at 24h
+    r = compare("price_24h", winners, losers,
+                buckets=[(5,"<"),(10,"<"),(15,"<"),(20,"<"),(25,"<"),(30,"<"),(35,"<")])
+    if r: comparisons.append(r)
+
+    # Price at 48h
+    r = compare("price_48h", winners, losers,
+                buckets=[(5,"<"),(10,"<"),(15,"<"),(20,"<"),(25,"<")])
+    if r: comparisons.append(r)
+
+    # Open price
+    r = compare("open_price", winners, losers,
+                buckets=[(5,"<"),(10,"<"),(15,"<"),(20,"<"),(25,"<")])
+    if r: comparisons.append(r)
+
+    # Momentum 24h (price change from 48h to 24h)
+    r = compare("momentum_24h", winners, losers,
+                buckets=[(-5,"<"),(-2,"<"),(0,"<"),(2,">="),(5,">=")])
+    if r: comparisons.append(r)
+
+    # Forecast error
+    r = compare("forecast_err", winners, losers,
+                buckets=[(1,"<"),(2,"<"),(3,"<"),(5,"<"),(8,"<")])
+    if r: comparisons.append(r)
+
+    # Number of snapshots (market activity)
+    r = compare("n_snapshots", winners, losers,
+                buckets=[(20,">="),(30,">="),(50,">=")])
+    if r: comparisons.append(r)
+
+    # Range center (temperature of the range)
+    r = compare("range_center", winners, losers,
+                buckets=[(60,"<"),(65,"<"),(70,"<"),(75,"<"),(80,"<"),(85,"<")])
+    if r: comparisons.append(r)
+
+    # City breakdown
+    city_stats = {}
+    for city in ["Atlanta", "Dallas", "NYC"]:
+        cw = [e for e in winners if e["city"] == city]
+        cl = [e for e in losers  if e["city"] == city]
+        total = len(cw) + len(cl)
+        city_stats[city] = {
+            "winners": len(cw),
+            "losers":  len(cl),
+            "total":   total,
+            "win_rate": round(len(cw)/total*100,1) if total else 0,
+        }
+
+    # Sort comparisons by separation strength
+    comparisons.sort(key=lambda x: -(x["best_bucket"]["separation"]
+                                      if x.get("best_bucket") else 0))
+
+    # ── Build the algorithm from top separators ──
+    top_rules = [c["best_bucket"] for c in comparisons[:5] if c.get("best_bucket")]
+
+    # ── Validate: apply top rules and see what happens ──
+    def apply_rules(entries, rules):
+        """Apply rules and return how many pass all filters."""
+        passing = []
+        for e in entries:
+            ok = True
+            for rule in rules:
+                var, op, thresh = rule["rule"].split(" ")[0], rule["rule"].split(" ")[1], float(rule["rule"].split(" ")[2])
+                val = e.get(var)
+                if val is None:
+                    ok = False
+                    break
+                if op == "<" and not (val < thresh):
+                    ok = False
+                    break
+                if op == ">=" and not (val >= thresh):
+                    ok = False
+                    break
+            if ok:
+                passing.append(e)
+        return passing
+
+    # Apply top 3 rules to both winners and losers
+    top3 = top_rules[:3]
+    filtered_winners = apply_rules(winners, top3)
+    filtered_losers  = apply_rules(losers,  top3)
+    n_fw = len(filtered_winners)
+    n_fl = len(filtered_losers)
+    combined_wr = round(n_fw/(n_fw+n_fl)*100,1) if (n_fw+n_fl) > 0 else 0
+
+    return {
+        "total_markets":   len(rows),
+        "with_wu_actual":  n_win + n_los,
+        "winners":         n_win,
+        "losers":          n_los,
+        "baseline_win_rate": round(n_win/(n_win+n_los)*100,1),
+        "city_stats":      city_stats,
+        "variable_comparison": comparisons,
+        "top_separating_rules": top_rules,
+        "validation": {
+            "rules_applied": top3,
+            "winners_passing": n_fw,
+            "losers_passing":  n_fl,
+            "win_rate_with_rules": combined_wr,
+            "improvement_vs_baseline": round(combined_wr - n_win/(n_win+n_los)*100, 1),
+        },
+        "winner_samples": winners[:10],
+        "loser_samples":  losers[:10],
+    }
+
 @app.get("/backtest/hidden-edges")
 def backtest_hidden_edges():
     """
