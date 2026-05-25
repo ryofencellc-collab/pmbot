@@ -90,7 +90,7 @@ CITY_CONFIG = {
 # Trading parameters — all audit-justified
 MIN_PRICE_C      = 0.5    # below this the payout math breaks down
 MAX_PRICE_C      = 40.0   # above this the market already knows — no edge
-SPREAD_LIMIT     = 3.0    # id=443 was placed at 3.4°, lost $50 — back to 3.0
+SPREAD_LIMIT     = 1.5    # Backtest finding: all winning bets had spread < 2.5°, tightening to 1.5°
 BASE_BET         = 10.0   # flat $10 until 30+ clean resolved trades proven
 MAX_BETS_PER_CITY = 1     # max 1 bet per city per target date
 DAYS_MIN         = 1
