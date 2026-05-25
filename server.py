@@ -2463,6 +2463,326 @@ def weekly_summary():
 
 
 
+
+@app.get("/ingest/hourly-temps")
+def ingest_hourly_temps():
+    """
+    Backfill 60 days of hourly WU observations for KATL, KDAL, KLGA.
+    Stores in wu_hourly table for Strategy 4 backtest.
+    """
+    import requests as req
+    import time
+    from datetime import date, timedelta
+
+    WU_KEY = "e1f10a1e78da46f5b10a1e78da96f525"
+    STATIONS = {
+        "Atlanta": {"station": "KATL", "unit": "e"},
+        "Dallas":  {"station": "KDAL", "unit": "e"},
+        "NYC":     {"station": "KLGA", "unit": "e"},
+    }
+
+    # Create table if not exists
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS wu_hourly (
+                id SERIAL PRIMARY KEY,
+                city TEXT NOT NULL,
+                station TEXT NOT NULL,
+                date TEXT NOT NULL,
+                hour_utc INTEGER NOT NULL,
+                temp_f FLOAT,
+                obs_time_local TEXT,
+                UNIQUE(city, date, hour_utc)
+            )
+        """)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        return {"error": f"Table creation failed: {e}"}
+
+    saved = 0
+    errors = 0
+    skipped = 0
+    today = date.today()
+
+    for city, cfg in STATIONS.items():
+        station = cfg["station"]
+        city_saved = 0
+
+        for days_back in range(1, 61):
+            target = today - timedelta(days=days_back)
+            date_str = target.strftime("%Y-%m-%d")
+            date_fmt = target.strftime("%Y%m%d")
+
+            # Check if already have data for this day
+            try:
+                conn = get_conn()
+                c = conn.cursor()
+                c.execute("SELECT COUNT(*) as n FROM wu_hourly WHERE city=%s AND date=%s",
+                          (city, date_str))
+                if c.fetchone()["n"] >= 12:  # already have most of the day
+                    conn.close()
+                    skipped += 1
+                    continue
+                conn.close()
+            except:
+                pass
+
+            try:
+                r = req.get(
+                    f"https://api.weather.com/v1/location/{station}:9:US/observations/historical.json",
+                    params={"apiKey": WU_KEY, "units": cfg["unit"], "startDate": date_fmt},
+                    timeout=15,
+                    headers={"User-Agent": "PolyEdge/1.0"}
+                )
+
+                if r.status_code != 200:
+                    errors += 1
+                    time.sleep(0.5)
+                    continue
+
+                obs = r.json().get("observations", [])
+                if not obs:
+                    time.sleep(0.3)
+                    continue
+
+                conn = get_conn()
+                c = conn.cursor()
+                for o in obs:
+                    temp = o.get("temp")
+                    valid_time = o.get("valid_time_gmt")
+                    obs_time = o.get("obs_time_local", "")
+                    if temp is None or valid_time is None:
+                        continue
+                    hour_utc = int(valid_time) // 3600 % 24
+                    try:
+                        c.execute("""
+                            INSERT INTO wu_hourly (city, station, date, hour_utc, temp_f, obs_time_local)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (city, date, hour_utc) DO NOTHING
+                        """, (city, station, date_str, hour_utc, float(temp), obs_time))
+                        city_saved += 1
+                        saved += 1
+                    except:
+                        pass
+                conn.commit()
+                conn.close()
+
+            except Exception as e:
+                errors += 1
+
+            time.sleep(0.3)
+
+    return {
+        "status": "complete",
+        "saved": saved,
+        "skipped": skipped,
+        "errors": errors,
+        "next_step": "/backtest/live-temp-real"
+    }
+
+
+@app.get("/backtest/live-temp-real")
+def backtest_live_temp_real():
+    """
+    Real Strategy 4 backtest using actual hourly WU observations.
+    
+    For each resolved market:
+    1. Get actual hourly temps from wu_hourly for that day
+    2. Calculate running max at each hour
+    3. Check if running max was inside any range at 10 AM, 11 AM, noon
+    4. If range was cheap AND running max confirmed it — would we have won?
+    
+    This is the real backtest with no simulation or approximation.
+    """
+    import math
+    from collections import defaultdict
+
+    BET = 10
+
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+
+        # Check if hourly data exists
+        c.execute("SELECT COUNT(*) as n FROM wu_hourly")
+        n_hourly = c.fetchone()["n"]
+        if n_hourly < 100:
+            conn.close()
+            return {
+                "error": "Not enough hourly data",
+                "hourly_rows": n_hourly,
+                "action": "Run /ingest/hourly-temps first"
+            }
+
+        # Pull all resolved exact-range markets
+        c.execute("""
+            SELECT
+                m.id::text as market_id,
+                m.city,
+                m.target_low as lo,
+                m.target_high as hi,
+                m.resolved_at,
+                LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10) as resolved_date,
+                (SELECT max_temp_f FROM wu_temps w
+                 WHERE w.city = m.city
+                 AND w.date = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)
+                 LIMIT 1) as wu_final
+            FROM markets m
+            WHERE m.market_type = 'range'
+            AND m.outcome IS NOT NULL
+            AND m.city IN ('Atlanta', 'Dallas', 'NYC')
+            AND EXISTS (
+                SELECT 1 FROM price_snapshots ps
+                WHERE ps.market_id = m.id::text
+            )
+            ORDER BY m.resolved_at DESC
+        """)
+        markets = [dict(r) for r in c.fetchall()]
+
+        # Pull all hourly data
+        c.execute("""
+            SELECT city, date, hour_utc, temp_f
+            FROM wu_hourly
+            ORDER BY city, date, hour_utc
+        """)
+        hourly_raw = c.fetchall()
+
+        # Pull price snapshots
+        market_ids = [m["market_id"] for m in markets]
+        c.execute("""
+            SELECT market_id, timestamp, yes_price
+            FROM price_snapshots
+            WHERE market_id = ANY(%s)
+            ORDER BY market_id, timestamp
+        """, (market_ids,))
+        snap_raw = c.fetchall()
+        conn.close()
+
+    except Exception as e:
+        return {"error": str(e)}
+
+    # Index hourly data: (city, date) -> {hour: running_max}
+    hourly_by_city_date = defaultdict(lambda: defaultdict(float))
+    for row in hourly_raw:
+        key = (row["city"], str(row["date"])[:10])
+        hourly_by_city_date[key][int(row["hour_utc"])] = float(row["temp_f"])
+
+    # Calculate running max by hour for each city/date
+    running_max = {}  # (city, date, hour) -> max temp up to that hour
+    for (city, date), hours in hourly_by_city_date.items():
+        cur_max = -999
+        for hour in sorted(hours.keys()):
+            cur_max = max(cur_max, hours[hour])
+            running_max[(city, date, hour)] = cur_max
+
+    # Index snapshots
+    snaps_by_market = defaultdict(list)
+    for s in snap_raw:
+        snaps_by_market[s["market_id"]].append(
+            (int(s["timestamp"]), float(s["yes_price"]))
+        )
+
+    # ── GRID SEARCH ──
+    results = []
+    all_bets = []
+
+    # Market close ≈ noon EST = 17:00 UTC
+    # 10 AM EST = 15:00 UTC = hour 15
+    # 11 AM EST = 16:00 UTC = hour 16
+    # noon EST  = 17:00 UTC = hour 17
+
+    for check_hour_utc in [14, 15, 16]:  # 9am, 10am, 11am EST
+        for max_price in [5, 10, 15, 20, 30]:
+            for safety in [0.0, 0.3, 0.5, 1.0]:
+
+                bets = []
+                for m in markets:
+                    wu = float(m["wu_final"]) if m["wu_final"] else None
+                    if wu is None:
+                        continue
+
+                    city = m["city"]
+                    date = m["resolved_date"]
+                    lo   = float(m["lo"])
+                    hi   = float(m["hi"])
+
+                    # Get running max at check_hour
+                    rmax = running_max.get((city, date, check_hour_utc))
+                    if rmax is None:
+                        continue
+
+                    # Is running max inside this range (with safety margin)?
+                    if not (lo + safety <= rmax < hi - safety):
+                        continue
+
+                    # Get market price at check_hour
+                    resolved_at = int(m["resolved_at"])
+                    check_ts = resolved_at - ((17 - check_hour_utc) * 3600)
+                    ticks = snaps_by_market.get(m["market_id"], [])
+                    before = [(t,p) for t,p in ticks if t <= check_ts]
+                    if not before:
+                        continue
+
+                    price = round(before[-1][1] * 100, 2)
+                    if price < 0.5 or price > max_price:
+                        continue
+
+                    # Did we win?
+                    real_win = lo <= wu < hi
+                    pnl = round((100/price - 1) * BET, 2) if real_win else -BET
+
+                    bets.append({
+                        "city": city, "date": date,
+                        "range": f"{lo}-{hi}",
+                        "running_max": rmax,
+                        "price_c": price,
+                        "wu_final": wu,
+                        "check_hour_utc": check_hour_utc,
+                        "real_win": real_win,
+                        "pnl": pnl,
+                    })
+
+                if len(bets) < 3:
+                    continue
+
+                n = len(bets)
+                wins = sum(1 for b in bets if b["real_win"])
+                total = round(sum(b["pnl"] for b in bets), 2)
+                wr = round(wins/n*100, 1)
+                ev = round(total/n, 2)
+
+                results.append({
+                    "check_hour_est": check_hour_utc - 4,
+                    "max_price_c": max_price,
+                    "safety_margin": safety,
+                    "n_bets": n,
+                    "wins": wins,
+                    "losses": n - wins,
+                    "win_rate": wr,
+                    "total_pnl": total,
+                    "ev_per_bet": ev,
+                    "profitable": ev > 0,
+                    "sample_bets": bets[:3],
+                })
+                if check_hour_utc == 15 and max_price == 15 and safety == 0.5:
+                    all_bets = bets
+
+    results.sort(key=lambda x: -x["ev_per_bet"])
+    profitable = [r for r in results if r["profitable"]]
+
+    return {
+        "hourly_data_rows": len(hourly_raw),
+        "markets_tested": len(markets),
+        "parameter_combos": len(results),
+        "profitable_combos": len(profitable),
+        "best_configs": results[:10],
+        "all_configs": results,
+        "sample_bets_10am_15c": all_bets[:10],
+    }
+
 @app.get("/backtest/live-temp")
 def backtest_live_temp():
     """
