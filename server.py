@@ -2457,6 +2457,233 @@ def weekly_summary():
 
 
 
+
+@app.get("/backtest/small-fish")
+def small_fish_backtest():
+    """
+    Backtest the small fish strategy using real market data.
+    
+    Strategy: Buy "or higher" markets already priced at 75-93¢
+    when ALL models forecast >= threshold + buffer degrees.
+    
+    Uses:
+    - price_snapshots table: real historical market prices
+    - markets table: market outcomes and metadata  
+    - wu_temps table: actual WU temperatures
+    - scan_log table: our forecast data per date
+    """
+    import math
+
+    results = []
+    skipped_reasons = {}
+
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+
+        # Pull all resolved "or higher" markets with real price history
+        c.execute("""
+            SELECT 
+                m.id as market_id,
+                m.city,
+                m.target_low as threshold,
+                m.target_high,
+                m.market_type,
+                m.unit,
+                m.outcome,
+                m.last_trade_price,
+                LEFT(m.resolved_at::text, 10) as resolved_date,
+                -- Get the opening price (earliest snapshot)
+                (SELECT yes_price FROM price_snapshots ps 
+                 WHERE ps.market_id = m.id::text
+                 ORDER BY ps.timestamp ASC LIMIT 1) as open_price,
+                -- Get price 2 days before resolution (entry price simulation)
+                (SELECT yes_price FROM price_snapshots ps
+                 WHERE ps.market_id = m.id::text
+                 AND ps.timestamp <= m.resolved_at - interval '2 days'
+                 ORDER BY ps.timestamp DESC LIMIT 1) as entry_price_2d,
+                -- Get price 1 day before resolution
+                (SELECT yes_price FROM price_snapshots ps
+                 WHERE ps.market_id = m.id::text
+                 AND ps.timestamp <= m.resolved_at - interval '1 day'
+                 ORDER BY ps.timestamp DESC LIMIT 1) as entry_price_1d,
+                -- Get the max price reached (to see if it ever hit 75¢+)
+                (SELECT MAX(yes_price) FROM price_snapshots ps
+                 WHERE ps.market_id = m.id::text) as max_price
+            FROM markets m
+            WHERE m.market_type = 'above'
+            AND m.outcome IS NOT NULL
+            AND m.city IN ('Atlanta', 'Dallas', 'NYC')
+            ORDER BY m.resolved_at DESC
+        """)
+        above_markets = [dict(r) for r in c.fetchall()]
+
+        # Get forecast data from scan_log for each market date
+        c.execute("""
+            SELECT DISTINCT city, target_date, 
+                   AVG(consensus) as consensus,
+                   AVG(spread) as spread,
+                   AVG(gfs_temp) as gfs,
+                   AVG(ukmo_temp) as ukmo,
+                   AVG(mf_temp) as mf
+            FROM scan_log
+            WHERE days_out IN (1, 2)
+            AND consensus IS NOT NULL
+            GROUP BY city, target_date
+        """)
+        forecasts = {}
+        for row in c.fetchall():
+            forecasts[(row["city"], str(row["target_date"])[:10])] = {
+                "consensus": float(row["consensus"]) if row["consensus"] else None,
+                "spread":    float(row["spread"]) if row["spread"] else None,
+                "gfs":       float(row["gfs"]) if row["gfs"] else None,
+                "ukmo":      float(row["ukmo"]) if row["ukmo"] else None,
+                "mf":        float(row["mf"]) if row["mf"] else None,
+            }
+
+        # Get WU actuals
+        c.execute("SELECT city, date, max_temp_f FROM wu_temps")
+        wu = {}
+        for row in c.fetchall():
+            wu[(row["city"], str(row["date"])[:10])] = float(row["max_temp_f"])
+
+        conn.close()
+
+    except Exception as e:
+        return {"error": str(e)}
+
+    # Test multiple parameter combinations
+    param_sets = [
+        {"buffer": 3, "spread_max": 2.0, "min_price": 0.75, "max_price": 0.93, "label": "buffer=3 spread=2"},
+        {"buffer": 4, "spread_max": 2.0, "min_price": 0.75, "max_price": 0.93, "label": "buffer=4 spread=2"},
+        {"buffer": 5, "spread_max": 2.0, "min_price": 0.75, "max_price": 0.93, "label": "buffer=5 spread=2"},
+        {"buffer": 5, "spread_max": 3.0, "min_price": 0.75, "max_price": 0.93, "label": "buffer=5 spread=3"},
+        {"buffer": 3, "spread_max": 3.0, "min_price": 0.70, "max_price": 0.95, "label": "buffer=3 spread=3 wide"},
+        {"buffer": 7, "spread_max": 2.0, "min_price": 0.75, "max_price": 0.93, "label": "buffer=7 spread=2"},
+        {"buffer": 10, "spread_max": 3.0, "min_price": 0.70, "max_price": 0.95, "label": "buffer=10 spread=3"},
+    ]
+
+    backtest_results = {}
+    market_detail = []
+
+    for params in param_sets:
+        bets = []
+        
+        for m in above_markets:
+            city         = m["city"]
+            threshold    = float(m["threshold"])
+            resolved_date = m.get("resolved_date", "")[:10]
+            outcome      = m["outcome"]  # "Yes" or "No"
+            
+            # Get entry price (1 day before resolution)
+            entry = m.get("entry_price_1d")
+            if entry is None:
+                entry = m.get("entry_price_2d")
+            if entry is None:
+                continue
+                
+            entry = float(entry)
+            entry_c = round(entry * 100, 1)
+
+            # Price filter
+            if entry < params["min_price"] or entry > params["max_price"]:
+                continue
+
+            # Get forecast for this date
+            fc = forecasts.get((city, resolved_date))
+            if fc is None or fc["consensus"] is None:
+                continue
+
+            consensus = fc["consensus"]
+            spread    = fc["spread"] or 0
+
+            # Buffer filter: forecast must be >= threshold + buffer
+            if consensus < threshold + params["buffer"]:
+                continue
+
+            # Spread filter
+            if spread > params["spread_max"]:
+                continue
+
+            # Get actual temp
+            actual = wu.get((city, resolved_date))
+            if actual is None:
+                continue
+
+            # Calculate P&L
+            bet_size = 50
+            won = (outcome == "Yes")
+            win_amt = round(bet_size * (1/entry - 1), 2)
+            pnl = win_amt if won else -bet_size
+
+            bets.append({
+                "city":      city,
+                "date":      resolved_date,
+                "threshold": threshold,
+                "entry_c":   entry_c,
+                "consensus": round(consensus, 1),
+                "spread":    round(spread, 1),
+                "actual":    actual,
+                "outcome":   outcome,
+                "won":       won,
+                "pnl":       pnl,
+            })
+
+        if not bets:
+            backtest_results[params["label"]] = {
+                "n_bets": 0,
+                "note": "no qualifying bets"
+            }
+            continue
+
+        n     = len(bets)
+        wins  = sum(1 for b in bets if b["won"])
+        total = round(sum(b["pnl"] for b in bets), 2)
+        wr    = round(wins/n*100, 1)
+        ev    = round(total/n, 2)
+
+        backtest_results[params["label"]] = {
+            "n_bets":      n,
+            "wins":        wins,
+            "losses":      n - wins,
+            "win_rate":    wr,
+            "total_pnl":   total,
+            "ev_per_bet":  ev,
+            "profitable":  ev > 0,
+            "bets":        bets,
+        }
+
+    # Summary of all param sets
+    summary = []
+    for label, res in backtest_results.items():
+        if res.get("n_bets", 0) > 0:
+            summary.append({
+                "params":     label,
+                "n_bets":     res["n_bets"],
+                "win_rate":   res["win_rate"],
+                "ev_per_bet": res["ev_per_bet"],
+                "total_pnl":  res["total_pnl"],
+                "profitable": res["profitable"],
+            })
+
+    summary.sort(key=lambda x: -x["ev_per_bet"])
+
+    # Best config detail
+    best = summary[0] if summary else None
+    best_bets = backtest_results.get(best["params"], {}).get("bets", []) if best else []
+
+    return {
+        "strategy":       "Small fish: buy high-priced or-higher markets",
+        "bet_size":       "$50 per bet",
+        "markets_tested": len(above_markets),
+        "summary":        summary,
+        "best_config":    best,
+        "best_config_bets": best_bets,
+        "total_above_markets_in_db": len(above_markets),
+        "forecasts_available": len(forecasts),
+        "wu_actuals_available": len(wu),
+    }
+
 @app.get("/backtest")
 def run_backtest():
     """
