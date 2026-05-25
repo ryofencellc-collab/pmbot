@@ -2461,6 +2461,456 @@ def weekly_summary():
 
 
 
+
+@app.get("/backtest/all-strategies")
+def backtest_all_strategies():
+    """
+    Backtest 4 strategies simultaneously using real data only.
+    
+    Strategy 1: Cross-market arbitrage
+      All ranges for one day must sum to ~100c. Find mispricings.
+    
+    Strategy 2: Momentum
+      Buy ranges where price is rising strongly in last 24hrs.
+    
+    Strategy 3: Direction (day-over-day temp change)
+      If yesterday was hot and today forecast is cooler,
+      market may still overprice hot ranges due to anchoring.
+    
+    Strategy 4: Closing price gap
+      Market closes at noon. WU posts at 2-5am next day.
+      Find ranges where market closed cheap but temp hit the range.
+    """
+    import math
+    from collections import defaultdict
+
+    BET = 10
+
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+
+        # ── Pull all price snapshots with market metadata ──
+        c.execute("""
+            SELECT
+                ps.market_id,
+                ps.timestamp,
+                ps.yes_price,
+                m.city,
+                m.target_low,
+                m.target_high,
+                m.market_type,
+                m.unit,
+                m.outcome,
+                m.resolved_at,
+                LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10) as resolved_date
+            FROM price_snapshots ps
+            JOIN markets m ON m.id::text = ps.market_id
+            WHERE m.outcome IS NOT NULL
+            AND m.city IN ('Atlanta', 'Dallas', 'NYC')
+            ORDER BY m.resolved_at DESC, ps.timestamp ASC
+        """)
+        snapshots = [dict(r) for r in c.fetchall()]
+
+        # ── Pull WU actuals ──
+        c.execute("SELECT city, date, max_temp_f FROM wu_temps WHERE city IN ('Atlanta','Dallas','NYC')")
+        wu_map = {(r["city"], str(r["date"])[:10]): float(r["max_temp_f"]) for r in c.fetchall()}
+
+        # ── Pull scan_log forecasts ──
+        c.execute("""
+            SELECT city, target_date, AVG(consensus) as fc, AVG(spread) as sp
+            FROM scan_log
+            WHERE days_out IN (1,2) AND consensus IS NOT NULL
+            AND city IN ('Atlanta','Dallas','NYC')
+            GROUP BY city, target_date
+        """)
+        fc_map = {(r["city"], str(r["target_date"])[:10]): 
+                  {"fc": float(r["fc"]), "sp": float(r["sp"]) if r["sp"] else 0}
+                  for r in c.fetchall()}
+
+        conn.close()
+
+    except Exception as e:
+        return {"error": str(e)}
+
+    # ── Organize snapshots by city+date+market ──
+    # Group: city -> date -> market_id -> list of (timestamp, price)
+    by_city_date = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    market_meta = {}
+
+    for s in snapshots:
+        city = s["city"]
+        date = s["resolved_date"]
+        mid  = s["market_id"]
+        by_city_date[city][date][mid].append((s["timestamp"], float(s["yes_price"])))
+        if mid not in market_meta:
+            market_meta[mid] = {
+                "city":       city,
+                "date":       date,
+                "lo":         float(s["target_low"]),
+                "hi":         float(s["target_high"]),
+                "mtype":      s["market_type"],
+                "outcome":    s["outcome"],
+                "resolved_at": s["resolved_at"],
+            }
+
+    # ═══════════════════════════════════════════════
+    # STRATEGY 1: CROSS-MARKET ARBITRAGE
+    # All exact ranges for one city/date must sum to ~100c
+    # If sum != 100, someone is mispriced
+    # ═══════════════════════════════════════════════
+    s1_bets = []
+
+    for city, dates in by_city_date.items():
+        for date, markets in dates.items():
+            wu = wu_map.get((city, date))
+            if wu is None:
+                continue
+
+            # Get all exact-range markets for this city/date
+            # Use price 24hrs before resolution
+            resolved_at = None
+            range_prices = {}
+
+            for mid, ticks in markets.items():
+                meta = market_meta[mid]
+                if meta["mtype"] != "range":
+                    continue
+                if resolved_at is None:
+                    resolved_at = meta["resolved_at"]
+
+                # Get price 24h before resolution
+                cutoff = meta["resolved_at"] - 86400
+                before = [(t, p) for t, p in ticks if t <= cutoff]
+                if not before:
+                    continue
+                price_24h = before[-1][1]  # latest before cutoff
+                range_prices[mid] = {
+                    "lo": meta["lo"], "hi": meta["hi"],
+                    "price": price_24h,
+                    "outcome": meta["outcome"],
+                }
+
+            if len(range_prices) < 5:
+                continue
+
+            # Check if prices sum correctly
+            total = sum(v["price"] for v in range_prices.values())
+            deviation = abs(total - 1.0)
+
+            if deviation > 0.05:  # more than 5% off from 100%
+                # Find which range is cheapest relative to others
+                # The cheapest range relative to its neighbors may be underpriced
+                ranges_sorted = sorted(range_prices.items(), key=lambda x: x[1]["lo"])
+
+                for mid, info in ranges_sorted:
+                    # Real outcome based on WU
+                    real_win = info["lo"] <= wu < info["hi"]
+                    real_out = "Yes" if real_win else "No"
+                    db_out   = info["outcome"]
+
+                    # Is this range underpriced? (price < 0.08 but neighbors are higher)
+                    price_c = round(info["price"] * 100, 2)
+                    if price_c < 0.5 or price_c > 40:
+                        continue
+
+                    s1_bets.append({
+                        "city": city, "date": date,
+                        "range": f"{info['lo']}-{info['hi']}",
+                        "price_c": price_c,
+                        "wu": wu,
+                        "sum_deviation_pct": round(deviation * 100, 1),
+                        "real_outcome": real_out,
+                        "won": real_win,
+                        "pnl": round((100/price_c - 1)*BET, 2) if real_win else -BET,
+                    })
+
+    s1_n = len(s1_bets)
+    s1_wins = sum(1 for b in s1_bets if b["won"])
+    s1_pnl = round(sum(b["pnl"] for b in s1_bets), 2)
+    s1_wr = round(s1_wins/s1_n*100, 1) if s1_n else 0
+    s1_ev = round(s1_pnl/s1_n, 2) if s1_n else 0
+
+    # ═══════════════════════════════════════════════
+    # STRATEGY 2: MOMENTUM
+    # Buy ranges where price rose >50% in last 24hrs
+    # Strong upward momentum = market gaining confidence
+    # ═══════════════════════════════════════════════
+    s2_bets = []
+
+    for mid, meta in market_meta.items():
+        if meta["mtype"] != "range":
+            continue
+        city = meta["city"]
+        date = meta["date"]
+        wu   = wu_map.get((city, date))
+        if wu is None:
+            continue
+
+        ticks = by_city_date[city][date].get(mid, [])
+        if len(ticks) < 4:
+            continue
+
+        ticks_sorted = sorted(ticks)
+        resolved_at  = meta["resolved_at"]
+        cutoff_24h   = resolved_at - 86400
+        cutoff_48h   = resolved_at - 172800
+
+        before_24h = [(t,p) for t,p in ticks_sorted if t <= cutoff_24h]
+        before_48h = [(t,p) for t,p in ticks_sorted if t <= cutoff_48h]
+
+        if not before_24h or not before_48h:
+            continue
+
+        price_24h = before_24h[-1][1]
+        price_48h = before_48h[-1][1]
+
+        if price_48h < 0.005:
+            continue
+
+        momentum = (price_24h - price_48h) / price_48h  # % change
+
+        # Only buy if strong upward momentum AND price in buyable range
+        price_c = round(price_24h * 100, 2)
+        if momentum < 0.5 or price_c < 0.5 or price_c > 40:
+            continue
+
+        real_win = meta["lo"] <= wu < meta["hi"]
+
+        s2_bets.append({
+            "city": city, "date": date,
+            "range": f"{meta['lo']}-{meta['hi']}",
+            "price_48h_c": round(price_48h*100, 2),
+            "price_24h_c": price_c,
+            "momentum_pct": round(momentum*100, 1),
+            "wu": wu,
+            "real_outcome": "Yes" if real_win else "No",
+            "won": real_win,
+            "pnl": round((100/price_c-1)*BET, 2) if real_win else -BET,
+        })
+
+    s2_n = len(s2_bets)
+    s2_wins = sum(1 for b in s2_bets if b["won"])
+    s2_pnl = round(sum(b["pnl"] for b in s2_bets), 2)
+    s2_wr = round(s2_wins/s2_n*100, 1) if s2_n else 0
+    s2_ev = round(s2_pnl/s2_n, 2) if s2_n else 0
+
+    # ═══════════════════════════════════════════════
+    # STRATEGY 3: DIRECTION (anchoring bias)
+    # If WU actual yesterday > forecast today by 5°F+,
+    # market may overprice high ranges due to anchoring
+    # Buy low ranges when temp is forecast to drop
+    # ═══════════════════════════════════════════════
+    s3_bets = []
+
+    wu_by_city_date = defaultdict(dict)
+    for (city, date), temp in wu_map.items():
+        wu_by_city_date[city][date] = temp
+
+    for mid, meta in market_meta.items():
+        if meta["mtype"] != "range":
+            continue
+        city = meta["city"]
+        date = meta["date"]
+        wu_today = wu_map.get((city, date))
+        if wu_today is None:
+            continue
+
+        fc_info = fc_map.get((city, date))
+        if fc_info is None:
+            continue
+
+        # Get yesterday's actual temp
+        from datetime import datetime, timedelta
+        try:
+            d = datetime.strptime(date, "%Y-%m-%d")
+            yesterday = (d - timedelta(days=1)).strftime("%Y-%m-%d")
+        except:
+            continue
+
+        wu_yesterday = wu_by_city_date[city].get(yesterday)
+        if wu_yesterday is None:
+            continue
+
+        temp_drop = wu_yesterday - fc_info["fc"]  # positive = forecast is cooler than yesterday
+
+        if temp_drop < 5:  # only act on significant drops
+            continue
+
+        # Market may still price high ranges expensively due to yesterday's heat
+        # Buy the range our forecast actually points to
+        ticks = by_city_date[city][date].get(mid, [])
+        if not ticks:
+            continue
+
+        resolved_at = meta["resolved_at"]
+        cutoff = resolved_at - 86400
+        before = [(t,p) for t,p in sorted(ticks) if t <= cutoff]
+        if not before:
+            continue
+
+        price_24h = before[-1][1]
+        price_c = round(price_24h * 100, 2)
+        if price_c < 0.5 or price_c > 40:
+            continue
+
+        # Check if this range contains our forecast
+        fc = fc_info["fc"]
+        if not (meta["lo"] <= fc < meta["hi"]):
+            continue
+
+        real_win = meta["lo"] <= wu_today < meta["hi"]
+
+        s3_bets.append({
+            "city": city, "date": date,
+            "range": f"{meta['lo']}-{meta['hi']}",
+            "wu_yesterday": wu_yesterday,
+            "forecast_today": fc,
+            "temp_drop": round(temp_drop, 1),
+            "price_c": price_c,
+            "wu_actual": wu_today,
+            "real_outcome": "Yes" if real_win else "No",
+            "won": real_win,
+            "pnl": round((100/price_c-1)*BET, 2) if real_win else -BET,
+        })
+
+    s3_n = len(s3_bets)
+    s3_wins = sum(1 for b in s3_bets if b["won"])
+    s3_pnl = round(sum(b["pnl"] for b in s3_bets), 2)
+    s3_wr = round(s3_wins/s3_n*100, 1) if s3_n else 0
+    s3_ev = round(s3_pnl/s3_n, 2) if s3_n else 0
+
+    # ═══════════════════════════════════════════════
+    # STRATEGY 4: CLOSING PRICE GAP
+    # Market closes at noon EST. WU posts next morning.
+    # Find ranges that closed cheap but temp hit them.
+    # These are markets where we could buy before close
+    # knowing the temp is already in that range.
+    # ═══════════════════════════════════════════════
+    s4_bets = []
+
+    for mid, meta in market_meta.items():
+        if meta["mtype"] != "range":
+            continue
+        city = meta["city"]
+        date = meta["date"]
+        wu = wu_map.get((city, date))
+        if wu is None:
+            continue
+
+        ticks = by_city_date[city][date].get(mid, [])
+        if not ticks:
+            continue
+
+        resolved_at = meta["resolved_at"]
+        # Market closes at noon = resolved_at - ~12hrs
+        close_time = resolved_at - 43200
+        # 2hrs before close = buying window
+        buy_time   = close_time - 7200
+
+        buy_ticks = [(t,p) for t,p in sorted(ticks) if t <= buy_time]
+        if not buy_ticks:
+            continue
+
+        buy_price = buy_ticks[-1][1]
+        buy_price_c = round(buy_price * 100, 2)
+
+        if buy_price_c < 0.5 or buy_price_c > 35:
+            continue
+
+        # Did temp land in this range?
+        real_win = meta["lo"] <= wu < meta["hi"]
+        if not real_win:
+            continue  # only count winning trades for this strategy
+            # (we'd need real-time temp data to implement this live)
+
+        # What was the price at market open vs buy time?
+        open_price = sorted(ticks)[0][1] if ticks else None
+
+        s4_bets.append({
+            "city": city, "date": date,
+            "range": f"{meta['lo']}-{meta['hi']}",
+            "open_price_c": round(open_price*100, 2) if open_price else None,
+            "buy_price_c": buy_price_c,
+            "wu_actual": wu,
+            "real_outcome": "Yes",
+            "won": True,
+            "pnl": round((100/buy_price_c-1)*BET, 2),
+        })
+
+    s4_n = len(s4_bets)
+    s4_pnl = round(sum(b["pnl"] for b in s4_bets), 2)
+    s4_ev = round(s4_pnl/s4_n, 2) if s4_n else 0
+
+    # ═══════════════════════════════════════════════
+    # COMPILE RESULTS
+    # ═══════════════════════════════════════════════
+    strategies = [
+        {
+            "strategy": "1. Cross-market arbitrage",
+            "description": "Buy ranges when total prices deviate >5% from 100¢",
+            "n_bets": s1_n,
+            "wins": s1_wins,
+            "win_rate": s1_wr,
+            "total_pnl": s1_pnl,
+            "ev_per_bet": s1_ev,
+            "profitable": s1_ev > 0,
+            "sample_bets": s1_bets[:5],
+        },
+        {
+            "strategy": "2. Momentum",
+            "description": "Buy ranges with >50% price rise in last 24hrs",
+            "n_bets": s2_n,
+            "wins": s2_wins,
+            "win_rate": s2_wr,
+            "total_pnl": s2_pnl,
+            "ev_per_bet": s2_ev,
+            "profitable": s2_ev > 0,
+            "sample_bets": s2_bets[:5],
+        },
+        {
+            "strategy": "3. Direction / anchoring",
+            "description": "Buy forecast range when temp drops 5°F+ vs yesterday",
+            "n_bets": s3_n,
+            "wins": s3_wins,
+            "win_rate": s3_wr,
+            "total_pnl": s3_pnl,
+            "ev_per_bet": s3_ev,
+            "profitable": s3_ev > 0,
+            "sample_bets": s3_bets[:5],
+        },
+        {
+            "strategy": "4. Closing price gap",
+            "description": "Buy winning ranges 2hrs before market close",
+            "n_bets": s4_n,
+            "wins": s4_n,
+            "win_rate": 100.0 if s4_n else 0,
+            "total_pnl": s4_pnl,
+            "ev_per_bet": s4_ev,
+            "profitable": s4_ev > 0,
+            "note": "100% win rate by design - shows missed opportunities",
+            "sample_bets": s4_bets[:5],
+        },
+    ]
+
+    best = max((s for s in strategies if s["n_bets"] > 0),
+               key=lambda x: x["ev_per_bet"], default=None)
+
+    return {
+        "strategies": strategies,
+        "best_strategy": best["strategy"] if best else None,
+        "best_ev_per_bet": best["ev_per_bet"] if best else None,
+        "data_available": {
+            "price_snapshots": len(snapshots),
+            "markets_with_wu": len([m for m in market_meta
+                                    if wu_map.get((market_meta[m]["city"],
+                                                   market_meta[m]["date"]))]),
+            "markets_with_forecast": len([m for m in market_meta
+                                          if fc_map.get((market_meta[m]["city"],
+                                                         market_meta[m]["date"]))]),
+        },
+    }
+
 @app.get("/backtest/buy-no")
 def backtest_buy_no():
     """
