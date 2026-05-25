@@ -2458,6 +2458,147 @@ def weekly_summary():
 
 
 
+
+@app.get("/backtest/small-fish/diagnose")
+def small_fish_diagnose():
+    """
+    Diagnose why no bets qualify in small fish backtest.
+    Shows sample data from each step of the filter chain.
+    """
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+
+        # 1. Sample of above markets with their price snapshots
+        c.execute("""
+            SELECT 
+                m.id, m.city, m.target_low as threshold,
+                m.outcome, m.resolved_at,
+                LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10) as resolved_date,
+                COUNT(ps.id) as snapshot_count,
+                MAX(ps.yes_price) as max_price,
+                MIN(ps.yes_price) as min_price,
+                -- Price 1 day before resolution
+                (SELECT yes_price FROM price_snapshots ps2
+                 WHERE ps2.market_id = m.id::text
+                 AND ps2.timestamp <= m.resolved_at - 86400
+                 ORDER BY ps2.timestamp DESC LIMIT 1) as entry_price_1d
+            FROM markets m
+            LEFT JOIN price_snapshots ps ON ps.market_id = m.id::text
+            WHERE m.market_type = 'above'
+            AND m.outcome IS NOT NULL
+            AND m.city IN ('Atlanta', 'Dallas', 'NYC')
+            GROUP BY m.id, m.city, m.target_low, m.outcome, m.resolved_at
+            ORDER BY m.resolved_at DESC
+            LIMIT 20
+        """)
+        sample_markets = [dict(r) for r in c.fetchall()]
+
+        # 2. Check price ranges in snapshots
+        c.execute("""
+            SELECT 
+                m.city,
+                COUNT(*) as n_markets,
+                AVG(ps_stats.max_p) as avg_max_price,
+                COUNT(CASE WHEN ps_stats.max_p >= 0.75 THEN 1 END) as markets_reached_75c,
+                COUNT(CASE WHEN ps_stats.max_p >= 0.90 THEN 1 END) as markets_reached_90c
+            FROM markets m
+            JOIN (
+                SELECT market_id, MAX(yes_price) as max_p
+                FROM price_snapshots
+                GROUP BY market_id
+            ) ps_stats ON ps_stats.market_id = m.id::text
+            WHERE m.market_type = 'above'
+            AND m.outcome IS NOT NULL
+            AND m.city IN ('Atlanta', 'Dallas', 'NYC')
+            GROUP BY m.city
+        """)
+        price_stats = [dict(r) for r in c.fetchall()]
+
+        # 3. Check forecast availability
+        c.execute("""
+            SELECT city, COUNT(DISTINCT target_date) as dates_with_forecasts
+            FROM scan_log
+            WHERE days_out IN (1,2)
+            AND consensus IS NOT NULL
+            AND city IN ('Atlanta', 'Dallas', 'NYC')
+            GROUP BY city
+        """)
+        forecast_coverage = [dict(r) for r in c.fetchall()]
+
+        # 4. Check WU coverage
+        c.execute("""
+            SELECT city, COUNT(*) as wu_days
+            FROM wu_temps
+            WHERE city IN ('Atlanta', 'Dallas', 'NYC')
+            GROUP BY city
+        """)
+        wu_coverage = [dict(r) for r in c.fetchall()]
+
+        # 5. Find markets that have BOTH price history AND forecasts AND wu
+        c.execute("""
+            SELECT 
+                m.id::text as market_id,
+                m.city,
+                m.target_low as threshold,
+                m.outcome,
+                LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10) as resolved_date,
+                (SELECT yes_price FROM price_snapshots ps
+                 WHERE ps.market_id = m.id::text
+                 AND ps.timestamp <= m.resolved_at - 86400
+                 ORDER BY ps.timestamp DESC LIMIT 1) as entry_price_1d
+            FROM markets m
+            WHERE m.market_type = 'above'
+            AND m.outcome IS NOT NULL
+            AND m.city IN ('Atlanta', 'Dallas', 'NYC')
+            AND EXISTS (
+                SELECT 1 FROM price_snapshots ps
+                WHERE ps.market_id = m.id::text
+            )
+            ORDER BY m.resolved_at DESC
+            LIMIT 30
+        """)
+        matched_markets = []
+        for row in c.fetchall():
+            r = dict(row)
+            resolved_date = r["resolved_date"]
+            city = r["city"]
+            
+            # Check forecast
+            c2 = conn.cursor()
+            c2.execute("""
+                SELECT AVG(consensus) as consensus, AVG(spread) as spread
+                FROM scan_log
+                WHERE city=%s AND target_date=%s AND days_out IN (1,2)
+                AND consensus IS NOT NULL
+            """, (city, resolved_date))
+            fc = c2.fetchone()
+            r["forecast"] = round(float(fc["consensus"]), 1) if fc and fc["consensus"] else None
+            r["spread"] = round(float(fc["spread"]), 1) if fc and fc["spread"] else None
+            
+            # Check WU
+            c2.execute("SELECT max_temp_f FROM wu_temps WHERE city=%s AND date=%s", 
+                      (city, resolved_date))
+            wu = c2.fetchone()
+            r["wu_actual"] = float(wu["max_temp_f"]) if wu else None
+            r["entry_price_c"] = round(float(r["entry_price_1d"])*100, 1) if r["entry_price_1d"] else None
+            
+            matched_markets.append(r)
+
+        conn.close()
+
+        return {
+            "sample_markets": sample_markets[:10],
+            "price_stats_by_city": price_stats,
+            "forecast_coverage": forecast_coverage,
+            "wu_coverage": wu_coverage,
+            "matched_markets_sample": matched_markets[:20],
+            "key_question": "How many markets have entry_price_1d + forecast + wu_actual?"
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+
 @app.get("/backtest/small-fish")
 def small_fish_backtest():
     """
