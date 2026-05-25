@@ -2460,6 +2460,222 @@ def weekly_summary():
 
 
 
+
+@app.get("/backtest/buy-no")
+def backtest_buy_no():
+    """
+    Backtest: Buy 'No' on overpriced 'or higher' markets.
+    
+    Strategy: When Polymarket prices 'X or higher' at 75c+,
+    but our forecast says temp will be BELOW X by gap_min degrees,
+    buy 'No' at the cheap price.
+    
+    Uses ONLY real data:
+    - price_snapshots: actual market prices at time of scan
+    - wu_temps: actual WU temperatures (ground truth)
+    - scan_log: our real forecasts (consensus, spread, days_out)
+    - markets: market metadata and outcomes
+    """
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+
+        # Step 1: Get all resolved 'or higher' markets with price history
+        c.execute("""
+            SELECT
+                m.id::text as market_id,
+                m.city,
+                m.target_low as threshold,
+                m.outcome as db_outcome,
+                m.resolved_at,
+                LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10) as resolved_date,
+                -- Price 24hrs before resolution = our entry price for No
+                (SELECT yes_price FROM price_snapshots ps
+                 WHERE ps.market_id = m.id::text
+                 AND ps.timestamp <= m.resolved_at - 86400
+                 ORDER BY ps.timestamp DESC LIMIT 1) as yes_price_24h,
+                -- Price 48hrs before resolution
+                (SELECT yes_price FROM price_snapshots ps
+                 WHERE ps.market_id = m.id::text
+                 AND ps.timestamp <= m.resolved_at - 172800
+                 ORDER BY ps.timestamp DESC LIMIT 1) as yes_price_48h,
+                -- Earliest price
+                (SELECT yes_price FROM price_snapshots ps
+                 WHERE ps.market_id = m.id::text
+                 ORDER BY ps.timestamp ASC LIMIT 1) as open_price,
+                -- WU actual temperature
+                (SELECT max_temp_f FROM wu_temps w
+                 WHERE w.city = m.city
+                 AND w.date = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)
+                 LIMIT 1) as wu_actual,
+                -- Our forecast from scan_log (1-2 days out)
+                (SELECT AVG(consensus) FROM scan_log sl
+                 WHERE sl.city = m.city
+                 AND sl.target_date = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)
+                 AND sl.days_out IN (1, 2)
+                 AND sl.consensus IS NOT NULL
+                 LIMIT 1) as our_forecast,
+                -- Our spread from scan_log
+                (SELECT AVG(spread) FROM scan_log sl
+                 WHERE sl.city = m.city
+                 AND sl.target_date = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)
+                 AND sl.days_out IN (1, 2)
+                 AND sl.consensus IS NOT NULL
+                 LIMIT 1) as our_spread
+            FROM markets m
+            WHERE m.market_type = 'above'
+            AND m.outcome IS NOT NULL
+            AND m.city IN ('Atlanta', 'Dallas', 'NYC')
+            ORDER BY m.resolved_at DESC
+        """)
+        raw = [dict(r) for r in c.fetchall()]
+        conn.close()
+
+    except Exception as e:
+        return {"error": str(e)}
+
+    # Step 2: Build clean dataset with real outcomes
+    dataset = []
+    for r in raw:
+        wu = float(r["wu_actual"]) if r["wu_actual"] else None
+        thresh = float(r["threshold"])
+        yes_24h = float(r["yes_price_24h"]) if r["yes_price_24h"] else None
+        fc = float(r["our_forecast"]) if r["our_forecast"] else None
+        spread = float(r["our_spread"]) if r["our_spread"] else None
+
+        if wu is None or yes_24h is None:
+            continue
+
+        # Real outcome based on WU actual (not DB which is corrupted)
+        real_outcome = "Yes" if wu >= thresh else "No"
+        no_price_24h = round(1.0 - yes_24h, 4)
+
+        row = {
+            "market_id":   r["market_id"],
+            "city":        r["city"],
+            "date":        r["resolved_date"],
+            "threshold":   thresh,
+            "wu_actual":   wu,
+            "real_outcome": real_outcome,
+            "yes_price":   round(yes_24h * 100, 2),
+            "no_price":    round(no_price_24h * 100, 2),
+            "forecast":    round(fc, 1) if fc else None,
+            "spread":      round(spread, 1) if spread else None,
+            "gap":         round(thresh - fc, 1) if fc else None,
+            # gap > 0 means our forecast is BELOW threshold (expect No)
+            # gap < 0 means our forecast is ABOVE threshold (expect Yes)
+        }
+        dataset.append(row)
+
+    # Step 3: Run backtest with multiple parameter combinations
+    BET = 10  # $10 per bet
+
+    param_sets = [
+        {"min_yes_price": 75, "min_gap": 0,  "max_spread": 99, "label": "All: yes≥75¢ gap≥0"},
+        {"min_yes_price": 75, "min_gap": 3,  "max_spread": 99, "label": "yes≥75¢ gap≥3°"},
+        {"min_yes_price": 75, "min_gap": 5,  "max_spread": 99, "label": "yes≥75¢ gap≥5°"},
+        {"min_yes_price": 75, "min_gap": 8,  "max_spread": 99, "label": "yes≥75¢ gap≥8°"},
+        {"min_yes_price": 75, "min_gap": 10, "max_spread": 99, "label": "yes≥75¢ gap≥10°"},
+        {"min_yes_price": 80, "min_gap": 5,  "max_spread": 99, "label": "yes≥80¢ gap≥5°"},
+        {"min_yes_price": 80, "min_gap": 5,  "max_spread": 5,  "label": "yes≥80¢ gap≥5° spread≤5°"},
+        {"min_yes_price": 90, "min_gap": 5,  "max_spread": 99, "label": "yes≥90¢ gap≥5°"},
+        {"min_yes_price": 90, "min_gap": 10, "max_spread": 99, "label": "yes≥90¢ gap≥10°"},
+        {"min_yes_price": 75, "min_gap": 5,  "max_spread": 3,  "label": "yes≥75¢ gap≥5° spread≤3°"},
+    ]
+
+    results = []
+    for p in param_sets:
+        qualifying = [
+            r for r in dataset
+            if r["yes_price"] >= p["min_yes_price"]
+            and r["gap"] is not None
+            and r["gap"] >= p["min_gap"]
+            and r["spread"] is not None
+            and r["spread"] <= p["max_spread"]
+            and r["no_price"] >= 0.5  # must have real liquidity
+        ]
+
+        if not qualifying:
+            results.append({
+                "params": p["label"],
+                "n_bets": 0,
+                "note": "no qualifying markets"
+            })
+            continue
+
+        n = len(qualifying)
+        wins = sum(1 for r in qualifying if r["real_outcome"] == "No")
+        losses = n - wins
+        pnl_list = []
+        for r in qualifying:
+            if r["real_outcome"] == "No":
+                pnl_list.append(round((100 / r["no_price"] - 1) * BET, 2))
+            else:
+                pnl_list.append(-BET)
+
+        total_pnl = round(sum(pnl_list), 2)
+        wr = round(wins / n * 100, 1)
+        ev = round(total_pnl / n, 2)
+
+        results.append({
+            "params":     p["label"],
+            "n_bets":     n,
+            "wins":       wins,
+            "losses":     losses,
+            "win_rate":   wr,
+            "total_pnl":  total_pnl,
+            "ev_per_bet": ev,
+            "profitable": ev > 0,
+            "bets":       qualifying,
+        })
+
+    # Sort by EV
+    results_sorted = sorted(
+        [r for r in results if r.get("n_bets", 0) > 0],
+        key=lambda x: -x["ev_per_bet"]
+    )
+
+    # Step 4: Best config detail
+    best = results_sorted[0] if results_sorted else None
+
+    # Step 5: Per-city breakdown for best config
+    city_breakdown = {}
+    if best and best.get("bets"):
+        for r in best["bets"]:
+            city = r["city"]
+            if city not in city_breakdown:
+                city_breakdown[city] = {"n": 0, "wins": 0, "pnl": 0}
+            city_breakdown[city]["n"] += 1
+            won = r["real_outcome"] == "No"
+            if won:
+                city_breakdown[city]["wins"] += 1
+                city_breakdown[city]["pnl"] += round((100/r["no_price"]-1)*BET, 2)
+            else:
+                city_breakdown[city]["pnl"] -= BET
+        for city in city_breakdown:
+            n = city_breakdown[city]["n"]
+            w = city_breakdown[city]["wins"]
+            city_breakdown[city]["win_rate"] = round(w/n*100, 1)
+            city_breakdown[city]["ev_per_bet"] = round(city_breakdown[city]["pnl"]/n, 2)
+
+    return {
+        "strategy":      "Buy No on overpriced or-higher markets",
+        "bet_size":      f"${BET}",
+        "total_markets_with_data": len(dataset),
+        "markets_with_forecast":  sum(1 for r in dataset if r["forecast"] is not None),
+        "summary":       results_sorted,
+        "best_config":   {
+            "params":      best["params"] if best else None,
+            "n_bets":      best["n_bets"] if best else 0,
+            "win_rate":    best["win_rate"] if best else 0,
+            "total_pnl":   best["total_pnl"] if best else 0,
+            "ev_per_bet":  best["ev_per_bet"] if best else 0,
+        } if best else None,
+        "city_breakdown": city_breakdown,
+        "all_qualifying_bets": best["bets"] if best else [],
+        "dataset_sample": dataset[:10],
+    }
+
 @app.get("/backtest/small-fish/dallas")
 def small_fish_dallas():
     """
