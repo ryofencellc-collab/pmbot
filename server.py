@@ -2459,6 +2459,121 @@ def weekly_summary():
 
 
 
+
+@app.get("/backtest/small-fish/dallas")
+def small_fish_dallas():
+    """
+    Pull every Dallas or-higher market with price history.
+    Shows: threshold, outcome, wu_actual, entry prices, max price.
+    Answers: which markets reached 75c+, did they actually win, what were prices?
+    """
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+
+        c.execute("""
+            SELECT
+                m.id::text as market_id,
+                m.city,
+                m.target_low as threshold,
+                m.outcome,
+                m.resolved_at,
+                LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10) as resolved_date,
+                COUNT(ps.id) as n_snapshots,
+                ROUND(MAX(ps.yes_price)::numeric, 4) as max_price,
+                ROUND(MIN(ps.yes_price)::numeric, 4) as min_price,
+                -- earliest price (market open)
+                (SELECT ROUND(yes_price::numeric,4) FROM price_snapshots ps2
+                 WHERE ps2.market_id = m.id::text
+                 ORDER BY ps2.timestamp ASC LIMIT 1) as open_price,
+                -- price 48hrs before resolution
+                (SELECT ROUND(yes_price::numeric,4) FROM price_snapshots ps2
+                 WHERE ps2.market_id = m.id::text
+                 AND ps2.timestamp <= m.resolved_at - 172800
+                 ORDER BY ps2.timestamp DESC LIMIT 1) as price_48h_before,
+                -- price 24hrs before resolution
+                (SELECT ROUND(yes_price::numeric,4) FROM price_snapshots ps2
+                 WHERE ps2.market_id = m.id::text
+                 AND ps2.timestamp <= m.resolved_at - 86400
+                 ORDER BY ps2.timestamp DESC LIMIT 1) as price_24h_before,
+                -- wu actual
+                (SELECT max_temp_f FROM wu_temps
+                 WHERE city = m.city
+                 AND date = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)
+                 LIMIT 1) as wu_actual,
+                -- our forecast
+                (SELECT ROUND(AVG(consensus)::numeric,1) FROM scan_log
+                 WHERE city = m.city
+                 AND target_date = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)
+                 AND days_out IN (1,2)
+                 AND consensus IS NOT NULL) as forecast,
+                (SELECT ROUND(AVG(spread)::numeric,1) FROM scan_log
+                 WHERE city = m.city
+                 AND target_date = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)
+                 AND days_out IN (1,2)
+                 AND consensus IS NOT NULL) as spread
+            FROM markets m
+            LEFT JOIN price_snapshots ps ON ps.market_id = m.id::text
+            WHERE m.market_type = 'above'
+            AND m.city = 'Dallas'
+            AND m.outcome IS NOT NULL
+            GROUP BY m.id, m.city, m.target_low, m.outcome, m.resolved_at
+            ORDER BY m.resolved_at DESC
+        """)
+
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+
+        # Annotate each row
+        for r in rows:
+            r["wu_actual"] = float(r["wu_actual"]) if r["wu_actual"] else None
+            r["forecast"]  = float(r["forecast"])  if r["forecast"]  else None
+            r["threshold"] = float(r["threshold"])
+
+            # Verify outcome correctness
+            if r["wu_actual"] is not None:
+                expected = "Yes" if r["wu_actual"] >= r["threshold"] else "No"
+                r["outcome_correct"] = (r["outcome"] == expected)
+                r["expected_outcome"] = expected
+
+            # Small fish opportunity check
+            p24 = float(r["price_24h_before"]) if r["price_24h_before"] else None
+            r["price_24h_c"] = round(p24 * 100, 1) if p24 else None
+            r["qualifies_75_93c"] = (p24 is not None and 0.75 <= p24 <= 0.93)
+            r["qualifies_90c_plus"] = (p24 is not None and p24 >= 0.90)
+
+            if r["forecast"] and r["threshold"]:
+                r["buffer"] = round(r["forecast"] - r["threshold"], 1)
+
+        # Summary stats
+        with_prices  = [r for r in rows if r["price_24h_before"]]
+        reached_75c  = [r for r in with_prices if r["qualifies_75_93c"]]
+        reached_90c  = [r for r in with_prices if r["qualifies_90c_plus"]]
+
+        wins_at_75c  = [r for r in reached_75c if r["outcome"] == "Yes"]
+        wins_at_90c  = [r for r in reached_90c if r["outcome"] == "Yes"]
+
+        bad_outcomes = [r for r in rows if r.get("outcome_correct") == False]
+
+        return {
+            "total_markets":        len(rows),
+            "with_price_history":   len(with_prices),
+            "reached_75_93c":       len(reached_75c),
+            "reached_90c_plus":     len(reached_90c),
+            "wins_at_75_93c":       len(wins_at_75c),
+            "win_rate_at_75_93c":   round(len(wins_at_75c)/len(reached_75c)*100,1) if reached_75c else 0,
+            "wins_at_90c_plus":     len(wins_at_90c),
+            "win_rate_at_90c_plus": round(len(wins_at_90c)/len(reached_90c)*100,1) if reached_90c else 0,
+            "bad_outcomes_in_db":   len(bad_outcomes),
+            "markets_75_93c":       reached_75c,
+            "markets_90c_plus":     reached_90c,
+            "bad_outcomes":         bad_outcomes[:5],
+            "all_markets":          rows,
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+
 @app.get("/backtest/small-fish/diagnose")
 def small_fish_diagnose():
     """
