@@ -2498,14 +2498,15 @@ def small_fish_backtest():
                  WHERE ps.market_id = m.id::text
                  ORDER BY ps.timestamp ASC LIMIT 1) as open_price,
                 -- Get price 2 days before resolution (entry price simulation)
+                -- resolved_at is Unix timestamp (bigint), subtract 2 days in seconds
                 (SELECT yes_price FROM price_snapshots ps
                  WHERE ps.market_id = m.id::text
-                 AND ps.timestamp <= m.resolved_at - interval '2 days'
+                 AND ps.timestamp <= m.resolved_at - 172800
                  ORDER BY ps.timestamp DESC LIMIT 1) as entry_price_2d,
-                -- Get price 1 day before resolution
+                -- Get price 1 day before resolution (86400 seconds)
                 (SELECT yes_price FROM price_snapshots ps
                  WHERE ps.market_id = m.id::text
-                 AND ps.timestamp <= m.resolved_at - interval '1 day'
+                 AND ps.timestamp <= m.resolved_at - 86400
                  ORDER BY ps.timestamp DESC LIMIT 1) as entry_price_1d,
                 -- Get the max price reached (to see if it ever hit 75¢+)
                 (SELECT MAX(yes_price) FROM price_snapshots ps
