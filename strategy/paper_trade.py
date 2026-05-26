@@ -748,10 +748,10 @@ MR_CITY_CONFIG = {
 }
 
 MR_BET_PER_RANGE  = 1.0    # $1 per range — minimum Polymarket order
-MR_MAX_PRICE_C    = 10.0   # skip ranges above 10¢ — correction gives less edge
+MR_MAX_PRICE_C    = 12.0   # skip ranges above 12¢ — real data shows 70-71F at 5¢
 MR_MIN_PRICE_C    = 0.3    # skip sub-0.3¢ — likely illiquid
-MR_MAX_TOTAL_C    = 10.0   # max $10 total per city per day
-MR_N_RANGES       = 4      # buy 4 adjacent ranges centered on corrected forecast
+MR_MAX_TOTAL_C    = 15.0   # max $15 total per city per day
+MR_N_RANGES       = 6      # buy 6 ranges = 77% win rate from real residual data
 MR_DAYS_OUT       = 2      # 2-day-ahead forecasts only (more bias = more edge)
 
 
@@ -882,7 +882,9 @@ def run_mr_scan():
         # Build target ranges: 4 adjacent centered on corrected
         import math as _math
         center_lo  = _math.floor(corrected)
-        target_los = [center_lo - 1, center_lo, center_lo + 1, center_lo + 2]
+        # Build MR_N_RANGES centered on corrected: 3 below, center, 2 above
+        half = MR_N_RANGES // 2
+        target_los = [center_lo - half + i for i in range(MR_N_RANGES)]
 
         # Get Polymarket event for this city+date
         slug      = cfg["slug"]
@@ -931,9 +933,11 @@ def run_mr_scan():
                 lo, hi, direction = parse_range(question, "F")
                 if lo is None or direction != "exact":
                     continue
-                if abs(lo - target_lo) > 0.1 and abs(hi - target_hi) > 0.1:
-                    continue
-                if not (abs(lo - target_lo) < 0.5):
+                # Match exact ranges AND adjacent or-below/or-higher markets
+                is_exact_match = abs(lo - target_lo) < 0.5
+                # Also catch "or below" if corrected is near bottom of our range
+                is_lower_bound = (hi <= -998 and abs(hi - target_lo) < 2)
+                if not (is_exact_match or is_lower_bound):
                     continue
 
                 # Get current price
