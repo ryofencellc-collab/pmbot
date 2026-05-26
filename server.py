@@ -4707,6 +4707,149 @@ def mr_trades():
         return {"error": str(e)}
 
 
+
+@app.get("/mr/available-ranges/{city}/{target_date}")
+def mr_available_ranges(city: str, target_date: str):
+    """
+    Show all available Polymarket ranges for a city/date with current prices.
+    Used to understand what ranges exist and what they cost.
+    """
+    import re
+
+    SLUGS = {
+        "Atlanta": "atlanta",
+        "Dallas":  "dallas",
+        "NYC":     "new-york-city",
+    }
+
+    slug = SLUGS.get(city)
+    if not slug:
+        return {"error": f"Unknown city: {city}"}
+
+    try:
+        from datetime import datetime
+        dt = datetime.strptime(target_date, "%Y-%m-%d")
+        slug_date = dt.strftime("%B-%-d").lower()
+        year = dt.year
+    except Exception as e:
+        return {"error": f"Invalid date: {e}"}
+
+    event_slug = f"highest-temperature-in-{slug}-on-{slug_date}-{year}"
+
+    import requests as req
+    try:
+        r = req.get(
+            "https://gamma-api.polymarket.com/events",
+            params={"slug": event_slug},
+            timeout=15,
+            headers={"User-Agent": "PolyEdge/1.0"}
+        )
+        if r.status_code != 200:
+            return {"error": f"API {r.status_code}"}
+
+        data = r.json()
+        if not data or not data[0].get("markets"):
+            return {"error": "No markets found", "slug": event_slug}
+
+        markets = data[0].get("markets", [])
+
+    except Exception as e:
+        return {"error": str(e)}
+
+    # Parse all range markets with prices
+    ranges = []
+    for m in markets:
+        question = m.get("question", "")
+        accepting = m.get("acceptingOrders", False)
+
+        prices = m.get("outcomePrices", "[]")
+        if isinstance(prices, str):
+            try:
+                import json as _j
+                prices = _j.loads(prices)
+            except:
+                continue
+
+        yes_price = float(prices[0]) if prices else 0.0
+        price_c   = round(yes_price * 100, 3)
+
+        # Parse range
+        nums = [float(n) for n in re.findall(r'\d+\.?\d*', question) if 40 <= float(n) <= 120]
+        if not nums:
+            continue
+
+        if "or higher" in question.lower():
+            lo, hi, mtype = nums[0], 999, "above"
+        elif "or below" in question.lower():
+            lo, hi, mtype = -999, nums[-1], "below"
+        elif len(nums) >= 2:
+            lo, hi, mtype = min(nums), max(nums), "range"
+        else:
+            continue
+
+        ranges.append({
+            "question":  question,
+            "lo":        lo,
+            "hi":        hi,
+            "type":      mtype,
+            "price_c":   price_c,
+            "accepting": accepting,
+            "buyable":   0.3 <= price_c <= 10.0 and accepting,
+            "payout_on_1": round(100/price_c, 1) if price_c > 0 else None,
+        })
+
+    ranges.sort(key=lambda x: x["lo"])
+
+    # Get our forecast for this city/date
+    BIAS = {"Atlanta": 11.5, "Dallas": 11.5, "NYC": 8.0}
+    bias = BIAS.get(city, 11.5)
+
+    # Get from scan_log
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("""
+            SELECT AVG(consensus) as fc, AVG(spread) as sp
+            FROM scan_log
+            WHERE city=%s AND target_date=%s
+            AND days_out IN (1,2) AND consensus IS NOT NULL
+        """, (city, target_date))
+        row = c.fetchone()
+        conn.close()
+        fc = float(row["fc"]) if row and row["fc"] else None
+        sp = float(row["sp"]) if row and row["sp"] else None
+    except:
+        fc = sp = None
+
+    corrected = round(fc - bias, 1) if fc else None
+
+    # Mark target ranges
+    if corrected:
+        import math
+        center_lo = math.floor(corrected)
+        target_los = {center_lo - 1, center_lo, center_lo + 1, center_lo + 2}
+        for r in ranges:
+            r["is_target"] = r["lo"] in target_los
+            r["distance_from_corrected"] = round(abs((r["lo"]+r["hi"])/2 - corrected), 1) if corrected else None
+
+    buyable = [r for r in ranges if r.get("buyable")]
+    targets = [r for r in ranges if r.get("is_target") and r.get("buyable")]
+
+    return {
+        "city":          city,
+        "target_date":   target_date,
+        "event_slug":    event_slug,
+        "forecast":      fc,
+        "corrected":     corrected,
+        "bias":          bias,
+        "spread":        sp,
+        "total_markets": len(markets),
+        "buyable_ranges": buyable,
+        "target_ranges":  targets,
+        "all_ranges":     [r for r in ranges if r["type"] == "range"],
+        "recommendation": f"Buy {len(targets)} ranges at target corrected={corrected}°F" if targets else "No target ranges available",
+    }
+
 @app.get("/mr/scan-now")
 def mr_scan_now():
     """Manually trigger multi-range scan."""
