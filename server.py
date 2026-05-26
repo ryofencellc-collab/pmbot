@@ -3819,6 +3819,285 @@ def quant_full_backtest():
         ),
     }
 
+
+@app.get("/quant/implied-forecast-backtest")
+def implied_forecast_backtest():
+    """
+    Reverse engineer the forecast from opening market prices.
+    
+    The range with the highest opening price = implied forecast center.
+    Apply 11.5F bias correction to find where we think temp will actually land.
+    Buy those cheap ranges.
+    
+    Step 1: Validate implied forecast vs real scan_log forecast (where we have both)
+    Step 2: Run full backtest on all 60 days using implied forecast
+    Step 3: Report results with full bet-by-bet detail
+    
+    100% real data — price_snapshots, wu_temps, markets. No estimation.
+    """
+    import math
+    from collections import defaultdict
+
+    CITY_BIAS = {"Atlanta": 11.5, "Dallas": 11.5, "NYC": 8.0}
+    BET = 1.0  # $1 per range
+
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+
+        # Pull all range markets with their full price history and WU actual
+        c.execute("""
+            SELECT
+                m.id::text as market_id,
+                m.city,
+                m.target_low as lo,
+                m.target_high as hi,
+                m.resolved_at,
+                LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10) as date,
+                -- Opening price (very first snapshot)
+                (SELECT yes_price FROM price_snapshots ps
+                 WHERE ps.market_id = m.id::text
+                 ORDER BY ps.timestamp ASC LIMIT 1) as open_price,
+                -- Price 48h before resolution
+                (SELECT yes_price FROM price_snapshots ps
+                 WHERE ps.market_id = m.id::text
+                 AND ps.timestamp <= m.resolved_at - 172800
+                 ORDER BY ps.timestamp DESC LIMIT 1) as price_48h,
+                -- Price 24h before resolution  
+                (SELECT yes_price FROM price_snapshots ps
+                 WHERE ps.market_id = m.id::text
+                 AND ps.timestamp <= m.resolved_at - 86400
+                 ORDER BY ps.timestamp DESC LIMIT 1) as price_24h,
+                -- WU actual
+                (SELECT max_temp_f FROM wu_temps w
+                 WHERE w.city = m.city
+                 AND w.date = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)
+                 LIMIT 1) as wu_actual,
+                -- Real scan_log forecast (where available)
+                (SELECT AVG(consensus) FROM scan_log sl
+                 WHERE sl.city = m.city
+                 AND sl.target_date = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)
+                 AND sl.days_out IN (1,2)
+                 AND sl.consensus IS NOT NULL) as real_forecast,
+                COUNT(ps2.id) as n_snapshots
+            FROM markets m
+            LEFT JOIN price_snapshots ps2 ON ps2.market_id = m.id::text
+            WHERE m.market_type = 'range'
+            AND m.outcome IS NOT NULL
+            AND m.city IN ('Atlanta', 'Dallas', 'NYC')
+            AND m.target_low >= 40
+            AND m.target_high <= 120
+            GROUP BY m.id, m.city, m.target_low, m.target_high, m.resolved_at
+            ORDER BY m.city, m.resolved_at
+        """)
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+
+    except Exception as e:
+        return {"error": str(e)}
+
+    # ── Group markets by city + date ──
+    by_city_date = defaultdict(list)
+    for r in rows:
+        wu = float(r["wu_actual"]) if r["wu_actual"] else None
+        op = float(r["open_price"]) * 100 if r["open_price"] else None
+        if wu is None or op is None:
+            continue
+        by_city_date[(r["city"], r["date"])].append({
+            "market_id":    r["market_id"],
+            "lo":           float(r["lo"]),
+            "hi":           float(r["hi"]),
+            "wu":           wu,
+            "open_price_c": round(op, 3),
+            "price_48h_c":  round(float(r["price_48h"])*100, 3) if r["price_48h"] else None,
+            "price_24h_c":  round(float(r["price_24h"])*100, 3) if r["price_24h"] else None,
+            "real_forecast": float(r["real_forecast"]) if r["real_forecast"] else None,
+            "n_snaps":      int(r["n_snapshots"]),
+        })
+
+    # ── Step 1: Validate implied forecast vs real forecast ──
+    validation = []
+    for (city, date), markets in by_city_date.items():
+        if not markets: continue
+        
+        # Find highest opening price = implied forecast center
+        best = max(markets, key=lambda x: x["open_price_c"])
+        implied_center = (best["lo"] + best["hi"]) / 2
+        
+        # Get real forecast if available
+        real_fc = best["real_forecast"]
+        wu = best["wu"]
+        
+        if real_fc:
+            diff = abs(implied_center - real_fc)
+            validation.append({
+                "city":           city,
+                "date":           date,
+                "implied_center": implied_center,
+                "real_forecast":  round(real_fc, 1),
+                "diff":           round(diff, 1),
+                "wu_actual":      wu,
+                "peak_range":     f"{best['lo']:.0f}-{best['hi']:.0f}",
+                "peak_price_c":   best["open_price_c"],
+                "accurate":       diff <= 3.0,
+            })
+
+    n_val = len(validation)
+    n_accurate = sum(1 for v in validation if v["accurate"])
+    val_accuracy = round(n_accurate/n_val*100, 1) if n_val else 0
+
+    # ── Step 2: Full backtest using implied forecast ──
+    all_bets = []
+    daily_summaries = []
+
+    for (city, date), markets in sorted(by_city_date.items()):
+        if not markets or len(markets) < 5:
+            continue
+
+        wu = markets[0]["wu"]
+        bias = CITY_BIAS.get(city, 11.5)
+
+        # Find implied forecast = center of highest-priced range at open
+        # Use top 3 ranges by opening price to get a weighted center
+        sorted_by_price = sorted(markets, key=lambda x: -x["open_price_c"])
+        top3 = sorted_by_price[:3]
+        
+        # Weighted average of top 3 range centers by price
+        total_weight = sum(m["open_price_c"] for m in top3)
+        if total_weight == 0:
+            continue
+        implied_fc = sum(
+            (m["lo"] + m["hi"]) / 2 * m["open_price_c"]
+            for m in top3
+        ) / total_weight
+
+        # Apply bias correction
+        corrected = implied_fc - bias
+
+        # Find 4 adjacent ranges centered on corrected forecast
+        center_lo = math.floor(corrected)
+        target_los = [center_lo - 1, center_lo, center_lo + 1, center_lo + 2]
+
+        # Get real market prices for these ranges (use 48h before resolution)
+        bet_ranges = []
+        for m in markets:
+            if m["lo"] in [float(lo) for lo in target_los]:
+                price = m["price_48h_c"] or m["price_24h_c"]
+                if price and 0.3 <= price <= 10:
+                    bet_ranges.append({
+                        "lo": m["lo"], "hi": m["hi"],
+                        "price_c": price,
+                    })
+
+        if len(bet_ranges) < 2:
+            continue
+
+        total_cost = sum(r["price_c"] for r in bet_ranges)
+        if total_cost > 20:
+            continue
+
+        # Did any range win?
+        winner = next(
+            (r for r in bet_ranges if r["lo"] <= wu < r["hi"]),
+            None
+        )
+
+        if winner:
+            payout = round((100/winner["price_c"] - 1) * winner["price_c"]/100 * 100, 2)
+            losing_cost = total_cost - winner["price_c"]
+            net_pnl = round(payout - losing_cost, 2)
+            won = True
+        else:
+            net_pnl = -total_cost
+            won = False
+
+        # Get real forecast for comparison if available
+        real_fc_check = markets[0]["real_forecast"]
+
+        bet = {
+            "city":         city,
+            "date":         date,
+            "implied_fc":   round(implied_fc, 1),
+            "corrected":    round(corrected, 1),
+            "real_fc":      round(real_fc_check, 1) if real_fc_check else None,
+            "wu_actual":    wu,
+            "bias_applied": bias,
+            "n_ranges":     len(bet_ranges),
+            "total_cost_c": round(total_cost, 2),
+            "ranges":       [{"lo": r["lo"], "hi": r["hi"],
+                              "price_c": r["price_c"]} for r in bet_ranges],
+            "winner":       f"{winner['lo']:.0f}-{winner['hi']:.0f}" if winner else None,
+            "won":          won,
+            "net_pnl":      net_pnl,
+            "implied_correct": abs(implied_fc - (real_fc_check or implied_fc)) <= 3
+                               if real_fc_check else None,
+        }
+        all_bets.append(bet)
+
+    if not all_bets:
+        return {
+            "error": "No qualifying bets",
+            "markets_grouped": len(by_city_date),
+            "validation_rows": n_val,
+        }
+
+    # ── Results ──
+    n     = len(all_bets)
+    wins  = sum(1 for b in all_bets if b["won"])
+    total = round(sum(b["net_pnl"] for b in all_bets), 2)
+    wr    = round(wins/n*100, 1)
+    ev    = round(total/n, 2)
+
+    # By city
+    city_results = {}
+    for city in ["Atlanta", "Dallas", "NYC"]:
+        cb = [b for b in all_bets if b["city"] == city]
+        if not cb: continue
+        cn = len(cb)
+        cw = sum(1 for b in cb if b["won"])
+        cp = round(sum(b["net_pnl"] for b in cb), 2)
+        city_results[city] = {
+            "n": cn, "wins": cw,
+            "win_rate": round(cw/cn*100, 1),
+            "total_pnl": cp,
+            "ev_per_bet": round(cp/cn, 2),
+        }
+
+    # By month
+    month_results = defaultdict(lambda: {"n":0,"wins":0,"pnl":0})
+    for b in all_bets:
+        m = b["date"][5:7]
+        month_results[m]["n"] += 1
+        month_results[m]["wins"] += int(b["won"])
+        month_results[m]["pnl"] = round(month_results[m]["pnl"] + b["net_pnl"], 2)
+
+    return {
+        "validation": {
+            "n_days_validated":        n_val,
+            "implied_vs_real_accurate": n_accurate,
+            "accuracy_within_3F":      f"{val_accuracy}%",
+            "sample":                  validation[:10],
+        },
+        "backtest": {
+            "n_bets":     n,
+            "wins":       wins,
+            "losses":     n - wins,
+            "win_rate":   wr,
+            "total_pnl":  total,
+            "ev_per_bet": ev,
+            "profitable": ev > 0,
+            "date_range": f"{min(b['date'] for b in all_bets)} to {max(b['date'] for b in all_bets)}",
+        },
+        "by_city":    city_results,
+        "by_month":   dict(month_results),
+        "all_bets":   all_bets,
+        "conclusion": (
+            f"Implied forecast method: {val_accuracy}% accurate vs real forecasts. "
+            f"Backtest: {n} bets, {wins} wins ({wr}% win rate), "
+            f"${total} total PnL, ${ev} EV/bet."
+        ),
+    }
+
 @app.get("/quant/multi-range-backtest")
 def multi_range_backtest():
     """
