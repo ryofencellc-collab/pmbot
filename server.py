@@ -4719,7 +4719,7 @@ def mr_available_ranges(city: str, target_date: str):
     SLUGS = {
         "Atlanta": "atlanta",
         "Dallas":  "dallas",
-        "NYC":     "new-york-city",
+        "NYC":     "nyc",
     }
 
     slug = SLUGS.get(city)
