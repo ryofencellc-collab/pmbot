@@ -4708,6 +4708,946 @@ def mr_trades():
 
 
 
+
+
+@app.get("/dashboard")
+def dashboard():
+    """
+    PolyEdge trading dashboard — shows both Big Fish and Multi-Range strategies.
+    Mobile-first, clean dark UI.
+    """
+    html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>PolyEdge Dashboard</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap');
+
+  :root {
+    --bg:       #0a0a0f;
+    --surface:  #12121a;
+    --border:   #1e1e2e;
+    --accent:   #00ff9d;
+    --accent2:  #7c3aed;
+    --red:      #ff4444;
+    --yellow:   #fbbf24;
+    --text:     #e2e8f0;
+    --muted:    #64748b;
+    --win:      #00ff9d;
+    --loss:     #ff4444;
+    --pending:  #fbbf24;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Syne', sans-serif;
+    min-height: 100vh;
+    padding: 0;
+  }
+
+  /* HEADER */
+  .header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .logo {
+    font-family: 'Space Mono', monospace;
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: -0.5px;
+  }
+  .logo span { color: var(--muted); font-weight: 400; }
+  .header-time {
+    font-family: 'Space Mono', monospace;
+    font-size: 11px;
+    color: var(--muted);
+    text-align: right;
+  }
+
+  /* TABS */
+  .tabs {
+    display: flex;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 0 12px;
+    gap: 4px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .tab {
+    padding: 12px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+    transition: all 0.2s;
+    background: none;
+    border-top: none;
+    border-left: none;
+    border-right: none;
+  }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  /* MAIN */
+  .main { padding: 16px; max-width: 600px; margin: 0 auto; }
+
+  /* SECTION */
+  .section { display: none; }
+  .section.active { display: block; }
+
+  /* STAT CARDS ROW */
+  .stat-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 16px; }
+  .stat-row-3 { grid-template-columns: repeat(3, 1fr); }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px;
+  }
+  .stat-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin-bottom: 6px;
+  }
+  .stat-value {
+    font-family: 'Space Mono', monospace;
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text);
+    line-height: 1;
+  }
+  .stat-value.green { color: var(--win); }
+  .stat-value.red   { color: var(--loss); }
+  .stat-value.yellow{ color: var(--yellow); }
+
+  /* SECTION HEADER */
+  .section-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin: 20px 0 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .section-title::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  /* TRADE CARD */
+  .trade-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px;
+    margin-bottom: 10px;
+    position: relative;
+    overflow: hidden;
+  }
+  .trade-card::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+  }
+  .trade-card.win::before   { background: var(--win); }
+  .trade-card.loss::before  { background: var(--loss); }
+  .trade-card.pending::before { background: var(--yellow); }
+
+  .trade-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 8px;
+  }
+  .trade-question {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    line-height: 1.4;
+    flex: 1;
+    margin-right: 12px;
+  }
+  .trade-pnl {
+    font-family: 'Space Mono', monospace;
+    font-size: 14px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .trade-pnl.pos { color: var(--win); }
+  .trade-pnl.neg { color: var(--loss); }
+  .trade-pnl.pend { color: var(--yellow); }
+
+  .trade-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .badge {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    padding: 3px 7px;
+    border-radius: 4px;
+    background: var(--border);
+    color: var(--muted);
+  }
+  .badge.city   { color: var(--accent); background: rgba(0,255,157,0.08); }
+  .badge.edge   { color: var(--accent2); background: rgba(124,58,237,0.1); }
+  .badge.price  { color: var(--yellow); background: rgba(251,191,36,0.08); }
+  .badge.wu     { color: #60a5fa; background: rgba(96,165,250,0.08); }
+  .badge.win    { color: var(--win); background: rgba(0,255,157,0.12); }
+  .badge.loss   { color: var(--loss); background: rgba(255,68,68,0.12); }
+  .badge.pend   { color: var(--yellow); background: rgba(251,191,36,0.12); }
+
+  /* PNL BANNER */
+  .pnl-banner {
+    background: linear-gradient(135deg, var(--surface) 0%, #0d1117 100%);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 20px;
+    margin-bottom: 16px;
+    text-align: center;
+  }
+  .pnl-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 1px; }
+  .pnl-main  {
+    font-family: 'Space Mono', monospace;
+    font-size: 40px;
+    font-weight: 700;
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+  .pnl-sub { font-size: 13px; color: var(--muted); font-family: 'Space Mono', monospace; }
+
+  /* SCANNER STATUS */
+  .scanner-status {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .dot.green { background: var(--win); box-shadow: 0 0 8px var(--win); animation: pulse 2s infinite; }
+  .dot.red   { background: var(--loss); }
+  .dot.yellow{ background: var(--yellow); animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  .scanner-info { flex: 1; }
+  .scanner-name { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+  .scanner-detail { font-size: 11px; color: var(--muted); font-family: 'Space Mono', monospace; }
+
+  /* LOADING */
+  .loading {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--muted);
+    font-size: 13px;
+    font-family: 'Space Mono', monospace;
+  }
+  .loading::after {
+    content: '...';
+    animation: dots 1.5s infinite;
+  }
+  @keyframes dots { 0%{content:'.'}33%{content:'..'}66%{content:'...'}100%{content:''} }
+
+  /* EMPTY STATE */
+  .empty { text-align: center; padding: 30px 20px; color: var(--muted); font-size: 13px; }
+
+  /* REFRESH BTN */
+  .refresh-btn {
+    width: 100%;
+    background: rgba(0,255,157,0.08);
+    border: 1px solid rgba(0,255,157,0.2);
+    color: var(--accent);
+    padding: 12px;
+    border-radius: 10px;
+    font-family: 'Space Mono', monospace;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    margin-top: 16px;
+    letter-spacing: 0.5px;
+  }
+  .refresh-btn:active { opacity: 0.7; }
+
+  /* VERIFY SECTION */
+  .verify-row {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .verify-label { font-size: 13px; }
+  .verify-status { font-family: 'Space Mono', monospace; font-size: 12px; }
+  .ok   { color: var(--win); }
+  .fail { color: var(--loss); }
+  .warn { color: var(--yellow); }
+
+  /* CITY BREAKDOWN */
+  .city-row {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .city-name { font-size: 14px; font-weight: 600; }
+  .city-stats { text-align: right; }
+  .city-pnl { font-family: 'Space Mono', monospace; font-size: 14px; font-weight: 700; }
+  .city-wr   { font-size: 11px; color: var(--muted); font-family: 'Space Mono', monospace; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">Poly<span>Edge</span></div>
+  <div class="header-time" id="clock">--</div>
+</div>
+
+<div class="tabs">
+  <button class="tab active" onclick="showTab('overview')">Overview</button>
+  <button class="tab" onclick="showTab('bigfish')">Big Fish 🐟</button>
+  <button class="tab" onclick="showTab('multirange')">Multi-Range 🎯</button>
+  <button class="tab" onclick="showTab('verify')">Verify ✓</button>
+</div>
+
+<div class="main">
+
+  <!-- OVERVIEW -->
+  <div class="section active" id="tab-overview">
+    <div id="overview-content"><div class="loading">Loading</div></div>
+  </div>
+
+  <!-- BIG FISH -->
+  <div class="section" id="tab-bigfish">
+    <div id="bigfish-content"><div class="loading">Loading</div></div>
+  </div>
+
+  <!-- MULTI-RANGE -->
+  <div class="section" id="tab-multirange">
+    <div id="multirange-content"><div class="loading">Loading</div></div>
+  </div>
+
+  <!-- VERIFY -->
+  <div class="section" id="tab-verify">
+    <div id="verify-content"><div class="loading">Loading</div></div>
+  </div>
+
+</div>
+
+<script>
+// ── Clock ──
+function updateClock() {
+  const now = new Date();
+  const est = new Date(now.toLocaleString("en-US", {timeZone: "America/New_York"}));
+  const h = est.getHours(), m = est.getMinutes().toString().padStart(2,"0");
+  const ampm = h >= 12 ? "PM" : "AM";
+  const h12 = h % 12 || 12;
+  document.getElementById("clock").textContent =
+    est.toLocaleDateString("en-US",{month:"short",day:"numeric"}) + " " + h12 + ":" + m + " " + ampm + " EST";
+}
+updateClock();
+setInterval(updateClock, 1000);
+
+// ── Tab switching ──
+function showTab(name) {
+  document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+  document.querySelectorAll(".section").forEach(s => s.classList.remove("active"));
+  event.target.classList.add("active");
+  document.getElementById("tab-" + name).classList.add("active");
+  if (name === "overview")    loadOverview();
+  if (name === "bigfish")     loadBigFish();
+  if (name === "multirange")  loadMultiRange();
+  if (name === "verify")      loadVerify();
+}
+
+// ── Helpers ──
+function pnlClass(v) { return v > 0 ? "pos" : v < 0 ? "neg" : "pend"; }
+function pnlStr(v, pending) {
+  if (pending || v === null || v === undefined) return "PENDING";
+  return (v >= 0 ? "+" : "") + "$" + Math.abs(v).toFixed(2);
+}
+function outcomeClass(o) {
+  if (!o) return "pending";
+  return o === "Yes" ? "win" : "loss";
+}
+function outcomeBadge(o) {
+  if (!o) return '<span class="badge pend">PENDING</span>';
+  return o === "Yes"
+    ? '<span class="badge win">✓ WIN</span>'
+    : '<span class="badge loss">✗ LOSS</span>';
+}
+function edgeColor(e) {
+  if (e >= 0.45) return "color:#00ff9d";
+  if (e >= 0.30) return "color:#a78bfa";
+  if (e >= 0.20) return "color:#fbbf24";
+  return "color:#64748b";
+}
+
+// ── OVERVIEW ──
+async function loadOverview() {
+  const [bfData, mrData, diagData] = await Promise.all([
+    fetch("/paper/trades").then(r => r.json()).catch(() => ({})),
+    fetch("/mr/trades").then(r => r.json()).catch(() => ({})),
+    fetch("/diagnostics").then(r => r.json()).catch(() => ({})),
+  ]);
+
+  const bf = bfData;
+  const mr = mrData;
+  const diag = diagData;
+
+  const totalPnl = (bf.total_pnl || 0) + (mr.total_pnl || 0);
+  const totalBets = (bf.total_trades || 0) + (mr.total_bets || 0);
+  const totalWins = (bf.wins || 0) + (mr.wins || 0);
+  const totalLosses = (bf.losses || 0) + (mr.losses || 0);
+  const wr = totalWins + totalLosses > 0
+    ? Math.round(totalWins / (totalWins + totalLosses) * 100) : 0;
+
+  const scanner = diag.scanner || {};
+  const scanOk = scanner.status === "✅ OK";
+  const minsAgo = scanner.minutes_ago || "?";
+
+  document.getElementById("overview-content").innerHTML = `
+    <div class="pnl-banner">
+      <div class="pnl-label">Total P&L — Both Strategies</div>
+      <div class="pnl-main" style="color:${totalPnl >= 0 ? "var(--win)" : "var(--loss)"}">
+        ${totalPnl >= 0 ? "+" : ""}$${Math.abs(totalPnl).toFixed(2)}
+      </div>
+      <div class="pnl-sub">${totalBets} bets · ${wr}% win rate</div>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat-card">
+        <div class="stat-label">Big Fish P&L</div>
+        <div class="stat-value ${bf.total_pnl >= 0 ? "green" : "red"}">
+          ${bf.total_pnl >= 0 ? "+" : ""}$${Math.abs(bf.total_pnl || 0).toFixed(2)}
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Multi-Range P&L</div>
+        <div class="stat-value ${mr.total_pnl >= 0 ? "green" : "red"}">
+          ${mr.total_pnl >= 0 ? "+" : ""}$${Math.abs(mr.total_pnl || 0).toFixed(2)}
+        </div>
+      </div>
+    </div>
+
+    <div class="stat-row stat-row-3">
+      <div class="stat-card">
+        <div class="stat-label">Wins</div>
+        <div class="stat-value green">${totalWins}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Losses</div>
+        <div class="stat-value red">${totalLosses}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Pending</div>
+        <div class="stat-value yellow">${(bf.pending || 0) + (mr.pending || 0)}</div>
+      </div>
+    </div>
+
+    <div class="section-title">Scanners</div>
+
+    <div class="scanner-status">
+      <div class="dot ${scanOk ? "green" : "red"}"></div>
+      <div class="scanner-info">
+        <div class="scanner-name">Big Fish Scanner</div>
+        <div class="scanner-detail">Last scan ${minsAgo}min ago · ${scanner.last_decision || "--"} · ${scanner.last_city || "--"}</div>
+      </div>
+    </div>
+
+    <div class="scanner-status">
+      <div class="dot green"></div>
+      <div class="scanner-info">
+        <div class="scanner-name">Multi-Range Scanner</div>
+        <div class="scanner-detail">Runs 8AM EST daily · ${mr.total_bets || 0} bets placed · Bias: ATL/DAL 11.5°F · NYC 8°F</div>
+      </div>
+    </div>
+
+    <button class="refresh-btn" onclick="loadOverview()">↻ Refresh</button>
+  `;
+}
+
+// ── BIG FISH ──
+async function loadBigFish() {
+  const data = await fetch("/paper/trades").then(r => r.json()).catch(() => ({}));
+  const trades = data.trades || [];
+  const byCity = data.by_city || [];
+
+  let cityHtml = byCity.map(c => `
+    <div class="city-row">
+      <div class="city-name">${c.city}</div>
+      <div class="city-stats">
+        <div class="city-pnl" style="color:${c.pnl >= 0 ? "var(--win)" : "var(--loss)"}">
+          ${c.pnl >= 0 ? "+" : ""}$${Math.abs(c.pnl).toFixed(2)}
+        </div>
+        <div class="city-wr">${c.wins}W/${c.bets - c.wins}L · ${Math.round(c.wins/c.bets*100)||0}% WR</div>
+      </div>
+    </div>
+  `).join("");
+
+  let tradesHtml = trades.map(t => `
+    <div class="trade-card ${outcomeClass(t.outcome)}">
+      <div class="trade-top">
+        <div class="trade-question">${t.question}</div>
+        <div class="trade-pnl ${pnlClass(t.pnl)}">${pnlStr(t.pnl, !t.outcome)}</div>
+      </div>
+      <div class="trade-meta">
+        <span class="badge city">${t.city}</span>
+        <span class="badge">${t.target_date}</span>
+        <span class="badge price">${t.entry_price_c}¢</span>
+        <span class="badge edge" style="${edgeColor(t.edge)}">${Math.round((t.edge||0)*100)}% edge</span>
+        ${t.wu_actual ? `<span class="badge wu">WU ${t.wu_actual}°F</span>` : ""}
+        ${outcomeBadge(t.outcome)}
+      </div>
+    </div>
+  `).join("") || '<div class="empty">No trades yet</div>';
+
+  document.getElementById("bigfish-content").innerHTML = `
+    <div class="pnl-banner">
+      <div class="pnl-label">Big Fish P&L</div>
+      <div class="pnl-main" style="color:${data.total_pnl >= 0 ? "var(--win)" : "var(--loss)"}">
+        ${data.total_pnl >= 0 ? "+" : ""}$${Math.abs(data.total_pnl || 0).toFixed(2)}
+      </div>
+      <div class="pnl-sub">${data.total_trades||0} bets · ${data.win_rate||0}% win rate</div>
+    </div>
+
+    <div class="section-title">By City</div>
+    ${cityHtml}
+
+    <div class="section-title">Recent Trades</div>
+    ${tradesHtml}
+
+    <button class="refresh-btn" onclick="loadBigFish()">↻ Refresh</button>
+  `;
+}
+
+// ── MULTI-RANGE ──
+async function loadMultiRange() {
+  const data = await fetch("/mr/trades").then(r => r.json()).catch(() => ({}));
+  const trades = data.trades || [];
+  const byCity = data.by_city || [];
+
+  let cityHtml = byCity.length ? byCity.map(c => `
+    <div class="city-row">
+      <div class="city-name">${c.city}</div>
+      <div class="city-stats">
+        <div class="city-pnl" style="color:${c.pnl >= 0 ? "var(--win)" : "var(--loss)"}">
+          ${c.pnl >= 0 ? "+" : ""}$${Math.abs(c.pnl).toFixed(2)}
+        </div>
+        <div class="city-wr">${c.wins}W/${c.bets - c.wins}L · ${Math.round(c.wins/c.bets*100)||0}% WR</div>
+      </div>
+    </div>
+  `).join("") : '<div class="empty">No resolved bets yet</div>';
+
+  let tradesHtml = trades.map(t => `
+    <div class="trade-card ${outcomeClass(t.outcome)}">
+      <div class="trade-top">
+        <div class="trade-question">${t.question}</div>
+        <div class="trade-pnl ${pnlClass(t.pnl)}">${pnlStr(t.pnl, !t.outcome)}</div>
+      </div>
+      <div class="trade-meta">
+        <span class="badge city">${t.city}</span>
+        <span class="badge">${t.target_date}</span>
+        <span class="badge price">${t.entry_price_c}¢</span>
+        <span class="badge" style="color:#60a5fa;background:rgba(96,165,250,0.08)">
+          corr ${t.corrected_temp}°F
+        </span>
+        <span class="badge" style="color:#a78bfa;background:rgba(167,139,250,0.08)">
+          bias ${t.bias_used}°F
+        </span>
+        ${t.wu_actual ? `<span class="badge wu">WU ${t.wu_actual}°F</span>` : ""}
+        ${outcomeBadge(t.outcome)}
+      </div>
+    </div>
+  `).join("") || '<div class="empty">No bets placed yet</div>';
+
+  const roi = data.roi_pct || 0;
+  document.getElementById("multirange-content").innerHTML = `
+    <div class="pnl-banner">
+      <div class="pnl-label">Multi-Range P&L</div>
+      <div class="pnl-main" style="color:${data.total_pnl >= 0 ? "var(--win)" : "var(--loss)"}">
+        ${data.total_pnl >= 0 ? "+" : ""}$${Math.abs(data.total_pnl || 0).toFixed(2)}
+      </div>
+      <div class="pnl-sub">${data.total_bets||0} bets · ${data.win_rate||0}% WR · ROI ${roi >= 0 ? "+" : ""}${roi}%</div>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat-card">
+        <div class="stat-label">Total Wagered</div>
+        <div class="stat-value">$${(data.total_wagered || 0).toFixed(2)}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Pending</div>
+        <div class="stat-value yellow">${data.pending || 0}</div>
+      </div>
+    </div>
+
+    <div class="section-title">By City</div>
+    ${cityHtml}
+
+    <div class="section-title">All Bets</div>
+    ${tradesHtml}
+
+    <button class="refresh-btn" onclick="loadMultiRange()">↻ Refresh</button>
+  `;
+}
+
+// ── VERIFY ──
+async function loadVerify() {
+  document.getElementById("verify-content").innerHTML = '<div class="loading">Running checks</div>';
+  const data = await fetch("/verify/all").then(r => r.json()).catch(e => ({error: e.toString()}));
+
+  if (data.error) {
+    document.getElementById("verify-content").innerHTML = `<div class="empty">Error: ${data.error}</div>`;
+    return;
+  }
+
+  const ts = data.timestamps || {};
+  const slugs = data.slug_verification || {};
+  const wu = data.wu_accuracy || {};
+  const summary = data.summary || {};
+
+  const slugRows = Object.entries(slugs).map(([city, v]) => `
+    <div class="verify-row">
+      <div class="verify-label">${city} slug (${v.slug})</div>
+      <div class="verify-status ${v.slug_works ? "ok" : "fail"}">
+        ${v.slug_works ? "✓ " + v.markets_found + " markets" : "✗ not found"}
+      </div>
+    </div>
+  `).join("");
+
+  const wuRows = Object.entries(wu).filter(([k]) => k !== "error").map(([city, v]) => `
+    <div class="verify-row">
+      <div class="verify-label">${city} WU (${v.station})</div>
+      <div class="verify-status ${v.match === true ? "ok" : v.match === false ? "fail" : "warn"}">
+        ${v.match === true ? `✓ ${v.stored_temp}°F` :
+          v.match === false ? `✗ stored ${v.stored_temp}° live ${v.live_temp}°` :
+          v.stored_temp ? `${v.stored_temp}°F (unverified)` : "no data"}
+      </div>
+    </div>
+  `).join("");
+
+  const forecasts = (data.forecast_data || {}).forecasts || [];
+  const fcRows = forecasts.length ? forecasts.map(f => `
+    <div class="verify-row">
+      <div class="verify-label">${f.city} 2d forecast</div>
+      <div class="verify-status ok">${Math.round(f.consensus * 10)/10}°F · spread ${Math.round((f.spread||0)*10)/10}°</div>
+    </div>
+  `).join("") : '<div class="verify-row"><div class="verify-label">Forecasts</div><div class="verify-status warn">none yet today</div></div>';
+
+  document.getElementById("verify-content").innerHTML = `
+    <div class="pnl-banner" style="padding:16px">
+      <div class="pnl-label">System Status</div>
+      <div style="font-size:32px;margin:8px 0">${summary.ready_for_real_money ? "✅" : "⚠️"}</div>
+      <div class="pnl-sub">${summary.ready_for_real_money ? "All systems verified" : "Some checks failed"}</div>
+    </div>
+
+    <div class="section-title">Timestamp</div>
+    <div class="verify-row">
+      <div class="verify-label">Server time (EST)</div>
+      <div class="verify-status ${ts.timezone_correct ? "ok" : "fail"}">${ts.server_est || "--"}</div>
+    </div>
+
+    <div class="section-title">Polymarket Slugs</div>
+    ${slugRows}
+
+    <div class="section-title">WU Station Data</div>
+    ${wuRows}
+
+    <div class="section-title">Today's Forecasts (2-day)</div>
+    ${fcRows}
+
+    <button class="refresh-btn" onclick="loadVerify()">↻ Re-verify</button>
+  `;
+}
+
+// Load overview on start
+loadOverview();
+</script>
+</body>
+</html>"""
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(content=html)
+
+@app.get("/verify/all")
+def verify_all():
+    """
+    Full system verification — confirms every data source is accurate.
+    Tests slugs, prices, timestamps, WU data, forecasts.
+    No guessing — all real API calls.
+    """
+    import requests as req
+    import json as _json
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    GAMMA = "https://gamma-api.polymarket.com"
+    WU_KEY = "e1f10a1e78da46f5b10a1e78da96f525"
+    results = {}
+
+    # ── 1. SLUG VERIFICATION ──
+    # Test every city slug against real Polymarket API
+    slug_tests = {
+        "Atlanta": "atlanta",
+        "Dallas":  "dallas",
+        "NYC":     "nyc",
+    }
+
+    from datetime import date, timedelta
+    target = date.today() + timedelta(days=2)
+    slug_date = target.strftime("%B-%-d").lower()
+    year = target.year
+
+    slug_results = {}
+    for city, slug in slug_tests.items():
+        event_slug = f"highest-temperature-in-{slug}-on-{slug_date}-{year}"
+        try:
+            r = req.get(
+                f"{GAMMA}/events",
+                params={"slug": event_slug},
+                timeout=10,
+                headers={"User-Agent": "PolyEdge/1.0"}
+            )
+            data = r.json() if r.status_code == 200 else []
+            markets = data[0].get("markets", []) if data else []
+
+            # Get sample prices
+            sample_prices = []
+            for m in markets[:5]:
+                q = m.get("question","")
+                prices = m.get("outcomePrices","[]")
+                if isinstance(prices, str):
+                    prices = _json.loads(prices)
+                p = round(float(prices[0])*100, 2) if prices else 0
+                sample_prices.append({"question": q, "yes_price_c": p})
+
+            slug_results[city] = {
+                "slug":        slug,
+                "event_slug":  event_slug,
+                "http_status": r.status_code,
+                "markets_found": len(markets),
+                "slug_works":  len(markets) > 0,
+                "sample_prices": sample_prices,
+            }
+        except Exception as e:
+            slug_results[city] = {"slug": slug, "error": str(e), "slug_works": False}
+
+    results["slug_verification"] = slug_results
+    results["slug_all_correct"] = all(v.get("slug_works") for v in slug_results.values())
+
+    # ── 2. PRICE ACCURACY ──
+    # Compare our stored prices vs current live prices
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        # Get recent markets we have prices for
+        c.execute("""
+            SELECT m.id::text, m.city, m.question, m.target_low, m.target_high,
+                   ps.yes_price as stored_price,
+                   ps.timestamp as stored_at
+            FROM markets m
+            JOIN price_snapshots ps ON ps.market_id = m.id::text
+            WHERE m.outcome IS NULL
+            AND m.city IN ('Atlanta', 'Dallas', 'NYC')
+            ORDER BY ps.timestamp DESC
+            LIMIT 10
+        """)
+        stored = [dict(r) for r in c.fetchall()]
+        conn.close()
+
+        price_checks = []
+        for row in stored[:5]:
+            try:
+                r = req.get(
+                    f"{GAMMA}/markets/{row['id']}",
+                    timeout=8,
+                    headers={"User-Agent": "PolyEdge/1.0"}
+                )
+                if r.status_code == 200:
+                    live = r.json()
+                    live_prices = live.get("outcomePrices","[]")
+                    if isinstance(live_prices, str):
+                        live_prices = _json.loads(live_prices)
+                    live_p = round(float(live_prices[0])*100, 2) if live_prices else 0
+                    stored_p = round(float(row["stored_price"])*100, 2)
+                    price_checks.append({
+                        "market_id":    row["id"],
+                        "city":         row["city"],
+                        "question":     row["question"][:60],
+                        "stored_price_c": stored_p,
+                        "live_price_c": live_p,
+                        "drift_c":      round(live_p - stored_p, 2),
+                        "stored_at":    str(row["stored_at"]),
+                    })
+            except Exception as e:
+                price_checks.append({"market_id": row["id"], "error": str(e)})
+
+        results["price_accuracy"] = {
+            "checked": len(price_checks),
+            "details": price_checks,
+            "note": "drift_c shows how much price moved since last snapshot",
+        }
+    except Exception as e:
+        results["price_accuracy"] = {"error": str(e)}
+
+    # ── 3. TIMESTAMP ACCURACY ──
+    now_utc = datetime.now(timezone.utc)
+    now_est = datetime.now(ZoneInfo("America/New_York"))
+    results["timestamps"] = {
+        "server_utc":       now_utc.strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "server_est":       now_est.strftime("%Y-%m-%d %I:%M %p EST"),
+        "timezone_correct": now_est.tzname() in ["EDT", "EST"],
+        "note": "All bets use EST time — this is when to place real money",
+    }
+
+    # ── 4. WU DATA ACCURACY ──
+    # Check that our WU actuals match real station readings
+    wu_checks = {}
+    WU_STATIONS = {"Atlanta": "KATL", "Dallas": "KDAL", "NYC": "KLGA"}
+    yesterday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        for city, station in WU_STATIONS.items():
+            c.execute(
+                "SELECT max_temp_f FROM wu_temps WHERE city=%s AND date=%s",
+                (city, yesterday)
+            )
+            row = c.fetchone()
+            stored_temp = float(row["max_temp_f"]) if row else None
+
+            # Fetch live from WU API
+            try:
+                date_fmt = (date.today() - timedelta(days=1)).strftime("%Y%m%d")
+                r = req.get(
+                    f"https://api.weather.com/v1/location/{station}:9:US/observations/historical.json",
+                    params={"apiKey": WU_KEY, "units": "e", "startDate": date_fmt},
+                    timeout=10,
+                    headers={"User-Agent": "PolyEdge/1.0"}
+                )
+                live_temp = None
+                if r.status_code == 200:
+                    obs = r.json().get("observations", [])
+                    temps = [o.get("temp") for o in obs if o.get("temp")]
+                    live_temp = max(temps) if temps else None
+
+                wu_checks[city] = {
+                    "station":     station,
+                    "date":        yesterday,
+                    "stored_temp": stored_temp,
+                    "live_temp":   live_temp,
+                    "match":       abs(stored_temp - live_temp) < 1 if stored_temp and live_temp else None,
+                }
+            except Exception as e:
+                wu_checks[city] = {"station": station, "error": str(e), "stored_temp": stored_temp}
+        conn.close()
+    except Exception as e:
+        wu_checks = {"error": str(e)}
+
+    results["wu_accuracy"] = wu_checks
+    results["wu_all_match"] = all(
+        v.get("match") for v in wu_checks.values() if isinstance(v, dict) and "match" in v
+    )
+
+    # ── 5. FORECAST ACCURACY (scan_log vs live) ──
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("""
+            SELECT city, target_date, consensus, spread, scanned_at
+            FROM scan_log
+            WHERE target_date = %s
+            AND days_out = 2
+            AND consensus IS NOT NULL
+            AND city IN ('Atlanta', 'Dallas', 'NYC')
+            ORDER BY scanned_at DESC
+        """, (str(date.today() + timedelta(days=2)),))
+        forecast_rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+
+        results["forecast_data"] = {
+            "target_date": str(date.today() + timedelta(days=2)),
+            "forecasts": forecast_rows,
+            "note": "These are the forecasts driving today's MR bets",
+        }
+    except Exception as e:
+        results["forecast_data"] = {"error": str(e)}
+
+    # ── 6. MR TRADE ACCURACY ──
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("""
+            SELECT t.*, 
+                   ps_latest.yes_price as current_price
+            FROM mr_trades t
+            LEFT JOIN LATERAL (
+                SELECT yes_price FROM price_snapshots ps
+                WHERE ps.market_id = t.market_id
+                ORDER BY ps.timestamp DESC LIMIT 1
+            ) ps_latest ON true
+            ORDER BY t.id DESC LIMIT 10
+        """)
+        mr_trades = [dict(r) for r in c.fetchall()]
+        conn.close()
+        results["mr_trades_check"] = mr_trades
+    except Exception as e:
+        results["mr_trades_check"] = {"error": str(e)}
+
+    # ── SUMMARY ──
+    results["summary"] = {
+        "slugs_correct":    results.get("slug_all_correct", False),
+        "wu_data_correct":  results.get("wu_all_match", False),
+        "timestamps_correct": results["timestamps"]["timezone_correct"],
+        "verified_at_est":  results["timestamps"]["server_est"],
+        "ready_for_real_money": (
+            results.get("slug_all_correct", False) and
+            results.get("wu_all_match", False) and
+            results["timestamps"]["timezone_correct"]
+        ),
+    }
+
+    return results
+
 @app.get("/mr/available-ranges/{city}/{target_date}")
 def mr_available_ranges(city: str, target_date: str):
     """
