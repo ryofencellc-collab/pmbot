@@ -232,16 +232,35 @@ def run_scheduler():
             except Exception as e:
                 print(f"[SCHEDULER] Paper scan thread error: {e}")
 
-            # Check outcomes on pending trades
+            # Check outcomes on pending trades (big fish + multi-range)
             try:
-                from strategy.paper_trade import check_outcomes
+                from strategy.paper_trade import check_outcomes, mr_check_outcomes
                 resolved = check_outcomes()
-                if resolved > 0:
-                    print(f"[SCHEDULER] Resolved {resolved} trades")
+                mr_resolved = mr_check_outcomes()
+                if resolved + mr_resolved > 0:
+                    print(f"[SCHEDULER] Resolved {resolved} big fish, {mr_resolved} multi-range trades")
                 last_outcome = check_key
             except Exception as e:
                 print(f"[SCHEDULER] Outcome check error: {e}")
                 last_outcome = check_key
+
+            # Multi-range scan — run once per day at 8 AM EST
+            try:
+                from zoneinfo import ZoneInfo
+                from datetime import datetime as _dt
+                est_hour = _dt.now(ZoneInfo("America/New_York")).hour
+                if est_hour == 8:
+                    from strategy.paper_trade import run_mr_scan
+                    import threading as _mr_thr
+                    def _mr_scan():
+                        try:
+                            mr_placed, mr_summary = run_mr_scan()
+                            print(f"[SCHEDULER] MR scan done — {mr_placed} bets")
+                        except Exception as e:
+                            print(f"[SCHEDULER] MR scan error: {e}")
+                    _mr_thr.Thread(target=_mr_scan, daemon=True).start()
+            except Exception as e:
+                print(f"[SCHEDULER] MR scan trigger error: {e}")
             except Exception as e:
                 print(f"[SCHEDULER] Outcome check error: {e}")
 
@@ -4676,6 +4695,28 @@ def quant_bias_analysis():
             "This is the tradeable edge."
         ),
     }
+
+
+@app.get("/mr/trades")
+def mr_trades():
+    """Multi-range strategy performance and all trades."""
+    try:
+        from strategy.paper_trade import get_mr_performance
+        return get_mr_performance()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/mr/scan-now")
+def mr_scan_now():
+    """Manually trigger multi-range scan."""
+    try:
+        from strategy.paper_trade import run_mr_scan, mr_check_outcomes
+        mr_check_outcomes()
+        placed, summary = run_mr_scan()
+        return {"placed": placed, "summary": summary}
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.get("/backtest/reverse-engineer")
 def reverse_engineer():
