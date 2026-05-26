@@ -3126,6 +3126,265 @@ def backtest_live_temp():
 
 
 
+
+@app.get("/quant/multi-range-backtest")
+def multi_range_backtest():
+    """
+    Validate the multi-range strategy with real data.
+    
+    Strategy: Apply 11.5F bias correction, buy 3 adjacent ranges
+    centered on corrected forecast. Treat as one combined bet.
+    
+    For each day:
+    1. Get forecast, apply bias correction
+    2. corrected = forecast - bias
+    3. Buy ranges: [corrected-2, corrected-1, corrected, corrected+1] (3 ranges)
+    4. Cost = sum of prices for those 3 ranges
+    5. Win if any of the 3 ranges contains wu_actual
+    6. Payout = winning range payout
+    """
+    import math
+    from collections import defaultdict
+
+    CITY_BIAS = {"Atlanta": 11.5, "Dallas": 11.5, "NYC": 8.0}
+    CITY_STD  = {"Atlanta": 5.75, "Dallas": 5.96, "NYC": 5.55}
+
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+
+        # Get one forecast per city+date (earliest scan)
+        c.execute("""
+            SELECT DISTINCT ON (city, target_date)
+                city, target_date, consensus as forecast,
+                spread, days_out
+            FROM scan_log
+            WHERE consensus IS NOT NULL
+            AND city IN ('Atlanta', 'Dallas', 'NYC')
+            AND days_out IN (1, 2)
+            ORDER BY city, target_date, scanned_at ASC
+        """)
+        forecasts = {(r["city"], str(r["target_date"])[:10]): {
+            "forecast": float(r["forecast"]),
+            "spread": float(r["spread"]) if r["spread"] else 0,
+            "days_out": int(r["days_out"]),
+        } for r in c.fetchall()}
+
+        # Get WU actuals
+        c.execute("SELECT city, date, max_temp_f FROM wu_temps WHERE city IN ('Atlanta','Dallas','NYC')")
+        wu = {(r["city"], str(r["date"])[:10]): float(r["max_temp_f"]) for r in c.fetchall()}
+
+        # Get all range market prices (24h before resolution)
+        c.execute("""
+            SELECT
+                m.city,
+                LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10) as date,
+                m.target_low as lo,
+                m.target_high as hi,
+                (SELECT yes_price FROM price_snapshots ps
+                 WHERE ps.market_id = m.id::text
+                 AND ps.timestamp <= m.resolved_at - 86400
+                 ORDER BY ps.timestamp DESC LIMIT 1) as price_24h
+            FROM markets m
+            WHERE m.market_type = 'range'
+            AND m.outcome IS NOT NULL
+            AND m.city IN ('Atlanta', 'Dallas', 'NYC')
+        """)
+        # Index: (city, date, lo) -> price
+        prices = {}
+        for r in c.fetchall():
+            p = float(r["price_24h"]) * 100 if r["price_24h"] else None
+            if p and p >= 0.3:
+                prices[(r["city"], str(r["date"])[:10], float(r["lo"]))] = p
+
+        conn.close()
+
+    except Exception as e:
+        return {"error": str(e)}
+
+    # ── Run multi-range backtest ──
+    results_by_params = []
+
+    for n_ranges in [2, 3, 4, 5]:
+        for spread_max in [3.0, 5.0, 9.0]:
+            for days_filter in [1, 2, "both"]:
+
+                bets = []
+
+                for (city, date), fc_info in forecasts.items():
+                    wu_val = wu.get((city, date))
+                    if wu_val is None: continue
+
+                    fc = fc_info["forecast"]
+                    sp = fc_info["spread"]
+                    do = fc_info["days_out"]
+
+                    if sp > spread_max: continue
+                    if days_filter != "both" and do != days_filter: continue
+
+                    bias = CITY_BIAS[city]
+                    corrected = fc - bias
+
+                    # Build n_ranges centered on corrected
+                    # e.g., corrected=76.3 → center range is 76-77
+                    center_lo = math.floor(corrected)
+                    # Distribute ranges symmetrically around center
+                    half = n_ranges // 2
+                    range_los = [center_lo - half + i for i in range(n_ranges)]
+
+                    # Get prices for these ranges
+                    range_bets = []
+                    for lo in range_los:
+                        hi = lo + 1
+                        p = prices.get((city, date, float(lo)))
+                        if p is None: continue
+                        if p < 0.3 or p > 15: continue  # skip illiquid or expensive
+                        range_bets.append({"lo": lo, "hi": hi, "price_c": p})
+
+                    if len(range_bets) < 2: continue  # need at least 2 ranges
+
+                    # Calculate combined cost and potential payout
+                    total_cost = sum(r["price_c"] for r in range_bets)
+                    if total_cost > 30: continue  # max $30 total outlay per day
+
+                    # Did any range win?
+                    winner = None
+                    for r in range_bets:
+                        if r["lo"] <= wu_val < r["hi"]:
+                            winner = r
+                            break
+
+                    if winner:
+                        payout = round((100 / winner["price_c"] - 1) * (winner["price_c"] / 100) * 100, 2)
+                        # Net: win payout on winning range, lose cost on others
+                        losing_cost = total_cost - winner["price_c"]
+                        net_pnl = round(payout - losing_cost, 2)
+                        # Normalize to $10 equivalent
+                        scale = 10 / total_cost if total_cost > 0 else 0
+                        net_pnl_10 = round(net_pnl * scale, 2)
+                        won = True
+                    else:
+                        net_pnl = -total_cost
+                        scale = 10 / total_cost if total_cost > 0 else 0
+                        net_pnl_10 = round(-10, 2)
+                        won = False
+
+                    bets.append({
+                        "city": city, "date": date,
+                        "forecast": round(fc, 1),
+                        "corrected": round(corrected, 1),
+                        "wu_actual": wu_val,
+                        "spread": round(sp, 1),
+                        "n_ranges_found": len(range_bets),
+                        "total_cost_c": round(total_cost, 2),
+                        "ranges": [{"lo": r["lo"], "hi": r["hi"],
+                                    "price_c": r["price_c"]} for r in range_bets],
+                        "winner_range": f"{winner['lo']}-{winner['hi']}" if winner else None,
+                        "won": won,
+                        "net_pnl": net_pnl,
+                        "net_pnl_normalized": net_pnl_10,
+                    })
+
+                if len(bets) < 5: continue
+
+                n = len(bets)
+                wins = sum(1 for b in bets if b["won"])
+                total_pnl = round(sum(b["net_pnl"] for b in bets), 2)
+                total_pnl_norm = round(sum(b["net_pnl_normalized"] for b in bets), 2)
+                wr = round(wins / n * 100, 1)
+                ev = round(total_pnl / n, 2)
+                avg_cost = round(sum(b["total_cost_c"] for b in bets) / n, 2)
+
+                results_by_params.append({
+                    "n_ranges": n_ranges,
+                    "spread_max": spread_max,
+                    "days_filter": days_filter,
+                    "n_bets": n,
+                    "wins": wins,
+                    "win_rate": wr,
+                    "total_pnl": total_pnl,
+                    "total_pnl_normalized": total_pnl_norm,
+                    "ev_per_bet": ev,
+                    "avg_cost_c": avg_cost,
+                    "profitable": total_pnl > 0,
+                    "sample_bets": bets[:5],
+                })
+
+    results_by_params.sort(key=lambda x: -x["total_pnl_normalized"])
+    profitable = [r for r in results_by_params if r["profitable"]]
+
+    # ── Per city breakdown for best config ──
+    city_breakdown = {}
+    if profitable:
+        best = profitable[0]
+        # Re-run best config and break down by city
+        for city in ["Atlanta", "Dallas", "NYC"]:
+            city_bets = [b for b in best["sample_bets"] if b["city"] == city]
+            # Note: sample_bets only has 5, do full run for city breakdown
+            bias = CITY_BIAS[city]
+            n_ranges = best["n_ranges"]
+            spread_max = best["spread_max"]
+
+            c_bets = []
+            for (c2, date), fc_info in forecasts.items():
+                if c2 != city: continue
+                wu_val = wu.get((c2, date))
+                if wu_val is None: continue
+                if fc_info["spread"] > spread_max: continue
+
+                corrected = fc_info["forecast"] - bias
+                center_lo = math.floor(corrected)
+                half = n_ranges // 2
+                range_los = [center_lo - half + i for i in range(n_ranges)]
+
+                range_bets = []
+                for lo in range_los:
+                    p = prices.get((c2, date, float(lo)))
+                    if p and 0.3 <= p <= 15:
+                        range_bets.append({"lo": lo, "price_c": p})
+
+                if len(range_bets) < 2: continue
+
+                total_cost = sum(r["price_c"] for r in range_bets)
+                if total_cost > 30: continue
+
+                winner = next((r for r in range_bets
+                               if r["lo"] <= wu_val < r["lo"] + 1), None)
+
+                if winner:
+                    payout = round((100/winner["price_c"]-1)*(winner["price_c"]/100)*100, 2)
+                    net = round(payout - (total_cost - winner["price_c"]), 2)
+                    won = True
+                else:
+                    net = -total_cost
+                    won = False
+
+                c_bets.append({"won": won, "net_pnl": net,
+                                "cost_c": total_cost, "wu": wu_val,
+                                "corrected": round(corrected, 1)})
+
+            if c_bets:
+                cn = len(c_bets)
+                cw = sum(1 for b in c_bets if b["won"])
+                cp = round(sum(b["net_pnl"] for b in c_bets), 2)
+                city_breakdown[city] = {
+                    "n_bets": cn, "wins": cw,
+                    "win_rate": round(cw/cn*100,1),
+                    "total_pnl": cp,
+                    "ev_per_bet": round(cp/cn, 2),
+                    "avg_cost_c": round(sum(b["cost_c"] for b in c_bets)/cn, 2),
+                }
+
+    return {
+        "strategy": "Buy 2-5 adjacent ranges centered on bias-corrected forecast",
+        "bias_used": CITY_BIAS,
+        "total_param_combos": len(results_by_params),
+        "profitable_combos": len(profitable),
+        "top_10_configs": results_by_params[:10],
+        "best_config": profitable[0] if profitable else None,
+        "city_breakdown": city_breakdown,
+        "all_results": results_by_params[:30],
+    }
 @app.get("/quant/bias-analysis")
 def quant_bias_analysis():
     """
