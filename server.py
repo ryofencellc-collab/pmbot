@@ -3160,7 +3160,7 @@ def quant_bias_analysis():
                 sl.ukmo_temp,
                 sl.mf_temp,
                 sl.spread,
-                EXTRACT(MONTH FROM sl.target_date) as month,
+                EXTRACT(MONTH FROM sl.target_date::date) as month,
                 w.max_temp_f as wu_actual
             FROM scan_log sl
             JOIN wu_temps w
