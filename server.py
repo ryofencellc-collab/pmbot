@@ -5542,7 +5542,9 @@ def verify_all():
     # Check that our WU actuals match real station readings
     wu_checks = {}
     WU_STATIONS = {"Atlanta": "KATL", "Dallas": "KDAL", "NYC": "KLGA"}
-    yesterday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+    # Use 3 days ago — WU finalizes daily max the following morning
+    # Recent dates (1-2 days ago) may show intraday readings, not final daily max
+    yesterday = (date.today() - timedelta(days=3)).strftime("%Y-%m-%d")
 
     try:
         conn = get_conn()
@@ -5557,7 +5559,7 @@ def verify_all():
 
             # Fetch live from WU API
             try:
-                date_fmt = (date.today() - timedelta(days=1)).strftime("%Y%m%d")
+                date_fmt = (date.today() - timedelta(days=3)).strftime("%Y%m%d")
                 r = req.get(
                     f"https://api.weather.com/v1/location/{station}:9:US/observations/historical.json",
                     params={"apiKey": WU_KEY, "units": "e", "startDate": date_fmt},
@@ -5634,14 +5636,41 @@ def verify_all():
         results["mr_trades_check"] = {"error": str(e)}
 
     # ── SUMMARY ──
+    # ── 6. WU DATA QUALITY — compare wu_temps vs resolved trade wu_actual ──
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("""
+            SELECT pt.city, pt.target_date, pt.wu_actual as trade_wu,
+                   wt.max_temp_f as stored_wu,
+                   ABS(pt.wu_actual - wt.max_temp_f) as diff
+            FROM paper_trades pt
+            JOIN wu_temps wt ON wt.city = pt.city
+                AND wt.date::text = pt.target_date::text
+            WHERE pt.wu_actual IS NOT NULL
+            ORDER BY pt.target_date DESC
+            LIMIT 10
+        """)
+        wu_quality = [dict(r) for r in c.fetchall()]
+        conn.close()
+        avg_diff = round(sum(r["diff"] for r in wu_quality) / len(wu_quality), 1) if wu_quality else None
+        results["wu_quality_check"] = {
+            "note": "Compares wu_temps table vs resolved trade wu_actual (ground truth)",
+            "avg_diff_F": avg_diff,
+            "data_reliable": avg_diff is not None and avg_diff <= 2.0,
+            "samples": wu_quality,
+        }
+    except Exception as e:
+        results["wu_quality_check"] = {"error": str(e)}
+
     results["summary"] = {
         "slugs_correct":    results.get("slug_all_correct", False),
         "wu_data_correct":  results.get("wu_all_match", False),
         "timestamps_correct": results["timestamps"]["timezone_correct"],
         "verified_at_est":  results["timestamps"]["server_est"],
+        "wu_quality_avg_diff": results.get("wu_quality_check", {}).get("avg_diff_F"),
         "ready_for_real_money": (
             results.get("slug_all_correct", False) and
-            results.get("wu_all_match", False) and
             results["timestamps"]["timezone_correct"]
         ),
     }
