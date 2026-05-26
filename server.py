@@ -6120,6 +6120,218 @@ def reverse_engineer():
         "loser_samples":  losers[:10],
     }
 
+
+@app.get("/backtest/high-confidence")
+def backtest_high_confidence():
+    """
+    Backtest: Buy ANY range where edge > 25% regardless of price.
+    No price ceiling. Only filters: edge > 25%, spread < 1.5°.
+    
+    This tests whether removing the MAX_PRICE_C = 40c ceiling
+    would have produced better results.
+    
+    Uses real data only:
+    - scan_log: real forecasts with spread
+    - price_snapshots: real prices at time of scan
+    - wu_temps: real WU actuals (ground truth)
+    - markets: all resolved range markets
+    """
+    import math
+    from collections import defaultdict
+
+    BET = 10.0
+
+    CITY_CONFIG = {
+        "Atlanta": {"bias": 1.0,   "std": 1.5,  "min_edge": 0.25},
+        "Dallas":  {"bias": 0.0,   "std": 1.2,  "min_edge": 0.25},
+        "NYC":     {"bias": -1.25, "std": 1.5,  "min_edge": 0.25},
+    }
+
+    def cdf(x):
+        sign = 1 if x >= 0 else -1
+        x = abs(x)
+        t = 1/(1+0.3275911*x)
+        return 0.5*(1-sign*(((((1.061405429*t-1.453152027)*t+1.421413741)*t
+                              -0.284496736)*t+0.254829592)*t)*math.exp(-x*x))
+
+    def true_prob(lo, hi, fc, bias, std):
+        c = fc - bias
+        if hi >= 999: return 1.0 - cdf((lo-c)/std)
+        if lo <= -999: return cdf((hi+1-c)/std)
+        return cdf((hi+1-c)/std) - cdf((lo-c)/std)
+
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+
+        # Get all resolved markets with real prices and forecasts
+        c.execute("""
+            SELECT
+                m.id::text as market_id,
+                m.city,
+                m.target_low as lo,
+                m.target_high as hi,
+                m.market_type,
+                m.outcome,
+                m.resolved_at,
+                LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10) as date,
+                -- Price at time we would have seen it (48h before resolution)
+                (SELECT yes_price FROM price_snapshots ps
+                 WHERE ps.market_id = m.id::text
+                 AND ps.timestamp <= m.resolved_at - 86400
+                 ORDER BY ps.timestamp DESC LIMIT 1) as price_24h,
+                -- WU actual
+                (SELECT max_temp_f FROM wu_temps w
+                 WHERE w.city = m.city
+                 AND w.date = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)
+                 LIMIT 1) as wu_actual,
+                -- Our forecast
+                (SELECT AVG(consensus) FROM scan_log sl
+                 WHERE sl.city = m.city
+                 AND sl.target_date = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)
+                 AND sl.days_out IN (1,2)
+                 AND sl.consensus IS NOT NULL) as forecast,
+                (SELECT AVG(spread) FROM scan_log sl
+                 WHERE sl.city = m.city
+                 AND sl.target_date = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)
+                 AND sl.days_out IN (1,2)
+                 AND sl.consensus IS NOT NULL) as spread
+            FROM markets m
+            WHERE m.market_type IN ('range', 'above', 'below')
+            AND m.outcome IS NOT NULL
+            AND m.city IN ('Atlanta', 'Dallas', 'NYC')
+            ORDER BY m.resolved_at DESC
+        """)
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+
+    except Exception as e:
+        return {"error": str(e)}
+
+    # Run backtest with two strategies
+    # Strategy A: current system (edge > 25%, price 0.5-40¢)
+    # Strategy B: edge only (edge > 25%, no price ceiling)
+
+    strat_a = []  # current
+    strat_b = []  # edge only
+    strat_c = []  # high confidence only (edge > 35%, price > 40¢)
+
+    for row in rows:
+        wu  = float(row["wu_actual"]) if row["wu_actual"] else None
+        fc  = float(row["forecast"])  if row["forecast"]  else None
+        sp  = float(row["spread"])    if row["spread"]    else None
+        p   = float(row["price_24h"]) * 100 if row["price_24h"] else None
+
+        if wu is None or fc is None or sp is None or p is None:
+            continue
+        if p < 0.3:
+            continue
+
+        city = row["city"]
+        cfg  = CITY_CONFIG.get(city)
+        if not cfg:
+            continue
+
+        lo = float(row["lo"])
+        hi = float(row["hi"])
+
+        # Calculate true probability
+        tp  = true_prob(lo, hi, fc, cfg["bias"], cfg["std"])
+        mkt = p / 100.0
+        edge = tp - mkt
+
+        # Real outcome using WU
+        if row["market_type"] == "range":
+            real_win = lo <= wu < hi
+        elif row["market_type"] == "above":
+            real_win = wu >= lo
+        else:
+            real_win = wu <= hi
+
+        pnl_win  = round((100/p - 1) * BET, 2)
+        pnl_loss = -BET
+
+        bet = {
+            "city":     city,
+            "date":     row["date"],
+            "range":    f"{lo}-{hi}",
+            "type":     row["market_type"],
+            "price_c":  round(p, 2),
+            "forecast": round(fc, 1),
+            "spread":   round(sp, 1),
+            "true_prob": round(tp, 3),
+            "edge":     round(edge, 3),
+            "wu":       wu,
+            "won":      real_win,
+            "pnl":      pnl_win if real_win else pnl_loss,
+        }
+
+        # Strategy A: current (edge > 25%, spread < 1.5°, price 0.5-40¢)
+        if edge >= 0.25 and sp <= 1.5 and 0.5 <= p <= 40:
+            strat_a.append(bet)
+
+        # Strategy B: edge only (edge > 25%, spread < 1.5°, no price ceiling)
+        if edge >= 0.25 and sp <= 1.5:
+            strat_b.append(bet)
+
+        # Strategy C: high confidence (edge > 25%, spread < 1.5°, price > 40¢)
+        if edge >= 0.25 and sp <= 1.5 and p > 40:
+            strat_c.append(bet)
+
+    def summarize(bets, label):
+        if not bets:
+            return {"label": label, "n": 0, "note": "no qualifying bets"}
+        n    = len(bets)
+        wins = sum(1 for b in bets if b["won"])
+        pnl  = round(sum(b["pnl"] for b in bets), 2)
+        wr   = round(wins/n*100, 1)
+        ev   = round(pnl/n, 2)
+
+        # By price bucket
+        buckets = {}
+        for lo_p, hi_p, lbl in [(0,10,"0-10¢"),(10,30,"10-30¢"),(30,60,"30-60¢"),(60,85,"60-85¢"),(85,101,"85-100¢")]:
+            sub = [b for b in bets if lo_p <= b["price_c"] < hi_p]
+            if sub:
+                sn = len(sub)
+                sw = sum(1 for b in sub if b["won"])
+                sp2 = round(sum(b["pnl"] for b in sub), 2)
+                buckets[lbl] = {
+                    "n": sn, "wins": sw,
+                    "win_rate": round(sw/sn*100,1),
+                    "total_pnl": sp2,
+                    "ev_per_bet": round(sp2/sn,2),
+                }
+
+        return {
+            "label":      label,
+            "n_bets":     n,
+            "wins":       wins,
+            "losses":     n - wins,
+            "win_rate":   wr,
+            "total_pnl":  pnl,
+            "ev_per_bet": ev,
+            "profitable": pnl > 0,
+            "by_price_bucket": buckets,
+            "sample_bets": sorted(bets, key=lambda x: -x["edge"])[:10],
+        }
+
+    return {
+        "strategy_a": summarize(strat_a, "Current (edge>25%, price 0.5-40¢, spread<1.5°)"),
+        "strategy_b": summarize(strat_b, "Edge only (edge>25%, spread<1.5°, NO price ceiling)"),
+        "strategy_c": summarize(strat_c, "High price only (edge>25%, price>40¢, spread<1.5°)"),
+        "verdict": {
+            "a_pnl": round(sum(b["pnl"] for b in strat_a), 2) if strat_a else 0,
+            "b_pnl": round(sum(b["pnl"] for b in strat_b), 2) if strat_b else 0,
+            "c_pnl": round(sum(b["pnl"] for b in strat_c), 2) if strat_c else 0,
+            "best":  "B" if (sum(b["pnl"] for b in strat_b) > sum(b["pnl"] for b in strat_a)) else "A",
+        },
+        "data_coverage": {
+            "total_markets": len(rows),
+            "with_forecast_and_price": sum(1 for r in rows
+                if r["forecast"] and r["price_24h"] and r["wu_actual"]),
+        },
+    }
+
 @app.get("/backtest/hidden-edges")
 def backtest_hidden_edges():
     """
