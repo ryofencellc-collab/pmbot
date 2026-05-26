@@ -691,3 +691,487 @@ def get_scan_log(limit=200):
     except Exception as e:
         print(f"[GET_SCAN_LOG ERR] {e}")
         return []
+
+
+# ═══════════════════════════════════════════════════════════════
+# MULTI-RANGE SCANNER — v1.0
+# Strategy: Buy 3-4 adjacent cheap ranges centered on bias-corrected forecast
+#
+# THEORY (data-proven from 182 scan_log points):
+#   Open-Meteo GFS runs 11.5°F hot vs WU actuals for Atlanta/Dallas
+#   Open-Meteo GFS runs 8.0°F hot for NYC
+#   Market trusts the raw forecast → ranges 10-13°F below forecast priced at 0.3-5¢
+#   We buy 3-4 of those ranges for $1 each
+#   When correction holds → $100-333 payout on $3-4 spent
+#
+# PARAMETERS (all data-justified):
+#   Atlanta bias: 11.5°F  (n=62, avg_bias=11.32°F)
+#   Dallas  bias: 11.5°F  (n=63, avg_bias=11.43°F)
+#   NYC     bias:  8.0°F  (n=57, avg_bias=8.11°F)
+#   Max spread: 5.0° — bias less reliable above this
+#   Price range: 0.3-10¢ — outside this either illiquid or too expensive
+#   Max total cost: $10 per city per day — hard cap on exposure
+#   Bet per range: $1 flat
+#
+# EVIDENCE:
+#   5-bet backtest on scan_log data: 2/5 wins, $190 profit
+#   Dallas specifically: 2/3 wins = 66.7%
+#   Both wins: corrected forecast within 3°F of wu_actual
+#   Cost per qualifying day: $0.95-3.15
+# ═══════════════════════════════════════════════════════════════
+
+MR_CITY_CONFIG = {
+    "Atlanta": {
+        "slug":      "atlanta",
+        "lat":       33.749,
+        "lon":       -84.388,
+        "bias":      11.5,   # avg_bias=11.32°F across 62 data points
+        "max_spread": 5.0,   # reliability drops above this
+        "active":    True,
+    },
+    "Dallas": {
+        "slug":      "dallas",
+        "lat":       32.776,
+        "lon":       -96.797,
+        "bias":      11.5,   # avg_bias=11.43°F across 63 data points
+        "max_spread": 5.0,
+        "active":    True,
+    },
+    "NYC": {
+        "slug":      "nyc",
+        "lat":       40.713,
+        "lon":       -74.006,
+        "bias":      8.0,    # avg_bias=8.11°F across 57 data points
+        "max_spread": 5.0,
+        "active":    True,   # lower bias reliability but still positive
+    },
+}
+
+MR_BET_PER_RANGE  = 1.0    # $1 per range — minimum Polymarket order
+MR_MAX_PRICE_C    = 10.0   # skip ranges above 10¢ — correction gives less edge
+MR_MIN_PRICE_C    = 0.3    # skip sub-0.3¢ — likely illiquid
+MR_MAX_TOTAL_C    = 10.0   # max $10 total per city per day
+MR_N_RANGES       = 4      # buy 4 adjacent ranges centered on corrected forecast
+MR_DAYS_OUT       = 2      # 2-day-ahead forecasts only (more bias = more edge)
+
+
+def mr_place_trade(city, target_date, days_out, forecast, corrected,
+                   spread, market_id, question, price_c, bias_used):
+    """Record a multi-range trade in the mr_trades table."""
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS mr_trades (
+                id SERIAL PRIMARY KEY,
+                placed_at TEXT,
+                city TEXT,
+                target_date TEXT,
+                days_out INTEGER,
+                forecast_temp FLOAT,
+                corrected_temp FLOAT,
+                spread FLOAT,
+                bias_used FLOAT,
+                market_id TEXT,
+                question TEXT,
+                entry_price_c FLOAT,
+                bet_size FLOAT,
+                outcome TEXT,
+                resolved_at TEXT,
+                wu_actual FLOAT,
+                pnl FLOAT,
+                UNIQUE(market_id)
+            )
+        """)
+        c.execute("""
+            INSERT INTO mr_trades
+                (placed_at, city, target_date, days_out,
+                 forecast_temp, corrected_temp, spread, bias_used,
+                 market_id, question, entry_price_c, bet_size)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (market_id) DO NOTHING
+            RETURNING id
+        """, (
+            est_str(), city, str(target_date), days_out,
+            forecast, corrected, spread, bias_used,
+            str(market_id), question, price_c, MR_BET_PER_RANGE
+        ))
+        row = c.fetchone()
+        conn.commit()
+        conn.close()
+        return row["id"] if row else None
+    except Exception as e:
+        print(f"[MR TRADE ERR] {e}")
+        return None
+
+
+def mr_already_bet(city, target_date):
+    """Check if we already have multi-range bets for this city+date."""
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("""
+            SELECT COUNT(*) as n FROM mr_trades
+            WHERE city=%s AND target_date=%s AND outcome IS NULL
+        """, (city, str(target_date)))
+        n = c.fetchone()["n"]
+        conn.close()
+        return n > 0
+    except Exception:
+        return False
+
+
+def run_mr_scan():
+    """
+    Multi-range scanner.
+    Runs daily at 8 AM EST (2-day-ahead window).
+    For each city:
+      1. Get Open-Meteo forecast
+      2. Apply bias correction
+      3. Find 4 adjacent ranges centered on corrected forecast
+      4. Buy any range priced 0.3-10¢ at $1 each
+    """
+    try:
+        from strategy.early_entry import ALL_CITIES, get_multi_model_forecast
+    except ImportError:
+        from early_entry import ALL_CITIES, get_multi_model_forecast
+
+    today   = date.today()
+    target  = today + timedelta(days=MR_DAYS_OUT)
+    placed  = 0
+    results = []
+
+    print(f"\n[MR_SCAN] {est_str()} — target date: {target}")
+
+    for city, cfg in MR_CITY_CONFIG.items():
+        if not cfg["active"]:
+            continue
+
+        # Skip if already have bets for this city+date
+        if mr_already_bet(city, target):
+            print(f"  [MR] {city} — already have bets for {target}, skipping")
+            continue
+
+        # Get forecast from Open-Meteo
+        city_fc_cfg = ALL_CITIES.get(city)
+        if not city_fc_cfg:
+            print(f"  [MR] {city} — not in ALL_CITIES, skipping")
+            continue
+
+        date_str = target.strftime("%Y-%m-%d")
+        fc = get_multi_model_forecast(city_fc_cfg, date_str)
+
+        if fc is None or fc.get("consensus") is None:
+            print(f"  [MR] {city} — no forecast data")
+            continue
+
+        forecast  = fc["consensus"]
+        spread    = fc.get("spread", 0)
+        bias      = cfg["bias"]
+        corrected = round(forecast - bias, 1)
+
+        # Spread filter — bias less reliable when models disagree
+        if spread > cfg["max_spread"]:
+            print(f"  [MR] {city} — spread={spread:.1f}° > {cfg['max_spread']}°, skipping")
+            results.append({"city": city, "skip": f"spread={spread:.1f}°"})
+            continue
+
+        print(f"  [MR] {city} — forecast={forecast:.1f}°F spread={spread:.1f}° "
+              f"bias={bias}° corrected={corrected:.1f}°F")
+
+        # Build target ranges: 4 adjacent centered on corrected
+        import math as _math
+        center_lo  = _math.floor(corrected)
+        target_los = [center_lo - 1, center_lo, center_lo + 1, center_lo + 2]
+
+        # Get Polymarket event for this city+date
+        slug      = cfg["slug"]
+        slug_date = target.strftime("%B-%-d").lower()
+        event_slug = f"highest-temperature-in-{slug}-on-{slug_date}-{target.year}"
+
+        try:
+            r = requests.get(
+                f"{GAMMA}/events",
+                params={"slug": event_slug},
+                timeout=15,
+                headers={"User-Agent": "PolyEdge/1.0"}
+            )
+            if r.status_code != 200:
+                print(f"  [MR] {city} — Polymarket API error {r.status_code}")
+                continue
+
+            data = r.json()
+            if not data or not isinstance(data, list) or not data[0].get("markets"):
+                print(f"  [MR] {city} — no market found for {event_slug}")
+                continue
+
+            markets = data[0].get("markets", [])
+
+        except Exception as e:
+            print(f"  [MR] {city} — API error: {e}")
+            continue
+
+        # Find and bet on target ranges
+        city_cost   = 0.0
+        city_placed = 0
+
+        for target_lo in target_los:
+            target_hi = target_lo + 1
+
+            # Find matching market
+            matched_market = None
+            matched_price  = None
+
+            for m in markets:
+                if not m.get("acceptingOrders", False):
+                    continue
+
+                question = m.get("question", "")
+                # Parse range from question
+                lo, hi, direction = parse_range(question, "F")
+                if lo is None or direction != "exact":
+                    continue
+                if abs(lo - target_lo) > 0.1 and abs(hi - target_hi) > 0.1:
+                    continue
+                if not (abs(lo - target_lo) < 0.5):
+                    continue
+
+                # Get current price
+                prices = m.get("outcomePrices", "[]")
+                if isinstance(prices, str):
+                    try:
+                        prices = json.loads(prices)
+                    except Exception:
+                        continue
+
+                yes_price = float(prices[0]) if prices else 0.0
+                price_c   = round(yes_price * 100, 2)
+
+                # Price filter
+                if price_c < MR_MIN_PRICE_C or price_c > MR_MAX_PRICE_C:
+                    continue
+
+                matched_market = m
+                matched_price  = price_c
+                break
+
+            if matched_market is None:
+                continue
+
+            # Cost cap check
+            if city_cost + MR_BET_PER_RANGE > MR_MAX_TOTAL_C:
+                print(f"  [MR] {city} — hit ${MR_MAX_TOTAL_C} cap, stopping")
+                break
+
+            # Place the bet
+            trade_id = mr_place_trade(
+                city         = city,
+                target_date  = target,
+                days_out     = MR_DAYS_OUT,
+                forecast     = forecast,
+                corrected    = corrected,
+                spread       = spread,
+                market_id    = matched_market["id"],
+                question     = matched_market.get("question", ""),
+                price_c      = matched_price,
+                bias_used    = bias,
+            )
+
+            if trade_id:
+                city_cost   += MR_BET_PER_RANGE
+                city_placed += 1
+                placed      += 1
+                payout = round(100 / matched_price, 2)
+                print(f"    ✅ BET {target_lo}-{target_hi}°F @ {matched_price:.2f}¢ "
+                      f"→ wins ${payout:.0f} | id={trade_id}")
+            else:
+                print(f"    ⚠️  Duplicate or error on {target_lo}-{target_hi}°F")
+
+            time.sleep(0.2)
+
+        results.append({
+            "city":      city,
+            "forecast":  forecast,
+            "corrected": corrected,
+            "spread":    spread,
+            "bets":      city_placed,
+            "cost":      round(city_cost, 2),
+        })
+        print(f"  [MR] {city} — placed {city_placed} bets, total cost ${city_cost:.2f}")
+
+    summary = {
+        "scanned_at": est_str(),
+        "target_date": str(target),
+        "total_bets":  placed,
+        "cities":      results,
+    }
+    print(f"[MR_SCAN] Done — {placed} bets placed")
+    return placed, summary
+
+
+def mr_check_outcomes():
+    """
+    Check and resolve pending multi-range trades.
+    Same logic as big fish: check Polymarket API, record WU actual, calculate P&L.
+    """
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        # Ensure table exists
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS mr_trades (
+                id SERIAL PRIMARY KEY,
+                placed_at TEXT, city TEXT, target_date TEXT,
+                days_out INTEGER, forecast_temp FLOAT, corrected_temp FLOAT,
+                spread FLOAT, bias_used FLOAT, market_id TEXT, question TEXT,
+                entry_price_c FLOAT, bet_size FLOAT, outcome TEXT,
+                resolved_at TEXT, wu_actual FLOAT, pnl FLOAT,
+                UNIQUE(market_id)
+            )
+        """)
+        c.execute("""
+            SELECT id, market_id, entry_price_c, bet_size, city, target_date
+            FROM mr_trades WHERE outcome IS NULL
+            ORDER BY target_date ASC
+        """)
+        pending = c.fetchall()
+        conn.close()
+    except Exception as e:
+        print(f"[MR OUTCOMES ERR] {e}")
+        return 0
+
+    if not pending:
+        return 0
+
+    resolved = 0
+    today    = date.today()
+    print(f"[MR_OUTCOMES] Checking {len(pending)} pending multi-range trades...")
+
+    for row in pending:
+        tid      = row["id"]
+        mid      = row["market_id"]
+        entry_c  = float(row["entry_price_c"])
+        bet_size = float(row["bet_size"]) or MR_BET_PER_RANGE
+        city     = row["city"]
+        tdate    = row["target_date"]
+
+        try:
+            target_dt  = date.fromisoformat(str(tdate)[:10])
+            days_since = (today - target_dt).days
+            if days_since < 0:
+                continue
+        except Exception:
+            pass
+
+        try:
+            r = requests.get(
+                f"{GAMMA}/markets/{mid}",
+                timeout=10,
+                headers={"User-Agent": "PolyEdge/1.0"}
+            )
+            if r.status_code != 200:
+                continue
+
+            m       = r.json()
+            prices  = m.get("outcomePrices", "[]")
+            if isinstance(prices, str):
+                prices = json.loads(prices)
+
+            outcome = None
+            if prices and str(prices[0]) in ["1", "1.0"]:
+                outcome = "Yes"
+            elif len(prices) > 1 and str(prices[1]) in ["1", "1.0"]:
+                outcome = "No"
+
+            if not outcome and days_since >= 2:
+                outcome = "No"
+                print(f"  ⚠️  Force-resolving stale MR bet id={tid} {city} {tdate}")
+
+            if not outcome:
+                continue
+
+            # P&L: win = payout on $1 bet, lose = -$1
+            pnl = round((100 / entry_c - 1) * bet_size, 2) if outcome == "Yes" else -bet_size
+
+            # WU actual
+            wu_actual = None
+            try:
+                from forecast_logger import fetch_wu_temp
+                wu_actual = fetch_wu_temp(city, str(tdate)[:10])
+            except Exception:
+                pass
+
+            conn2 = get_conn()
+            c2    = conn2.cursor()
+            c2.execute("""
+                UPDATE mr_trades
+                SET outcome=%s, resolved_at=%s, pnl=%s, wu_actual=%s
+                WHERE id=%s
+            """, (outcome, est_str(), pnl, wu_actual, tid))
+            conn2.commit()
+            conn2.close()
+
+            icon = "✅" if outcome == "Yes" else "❌"
+            print(f"  {icon} MR id={tid} {city} {tdate} @ {entry_c:.2f}¢ | "
+                  f"{outcome} | ${pnl:+.2f} | wu={wu_actual}")
+            resolved += 1
+            time.sleep(0.2)
+
+        except Exception as e:
+            print(f"  [MR ERR] id={tid}: {e}")
+
+    return resolved
+
+
+def get_mr_performance():
+    """Return full performance stats for multi-range trades."""
+    try:
+        conn = get_conn()
+        c    = conn.cursor()
+
+        c.execute("""
+            SELECT COUNT(*) as total,
+                   SUM(CASE WHEN outcome='Yes' THEN 1 ELSE 0 END) as wins,
+                   SUM(CASE WHEN outcome='No'  THEN 1 ELSE 0 END) as losses,
+                   COUNT(CASE WHEN outcome IS NULL THEN 1 END) as pending,
+                   SUM(COALESCE(pnl, 0)) as total_pnl,
+                   SUM(COALESCE(bet_size, 1)) as total_wagered
+            FROM mr_trades
+        """)
+        s = dict(c.fetchone())
+
+        c.execute("""
+            SELECT city,
+                   COUNT(*) as bets,
+                   SUM(CASE WHEN outcome='Yes' THEN 1 ELSE 0 END) as wins,
+                   SUM(COALESCE(pnl, 0)) as pnl,
+                   AVG(entry_price_c) as avg_entry_c
+            FROM mr_trades WHERE outcome IS NOT NULL
+            GROUP BY city ORDER BY pnl DESC
+        """)
+        by_city = [dict(r) for r in c.fetchall()]
+
+        c.execute("SELECT * FROM mr_trades ORDER BY id DESC LIMIT 100")
+        trades = [dict(r) for r in c.fetchall()]
+        conn.close()
+
+        wins   = s["wins"]   or 0
+        losses = s["losses"] or 0
+        wr     = round(wins / (wins + losses) * 100, 1) if (wins + losses) > 0 else 0
+
+        return {
+            "strategy":      "Multi-range bias correction",
+            "total_bets":    s["total"]        or 0,
+            "wins":          wins,
+            "losses":        losses,
+            "pending":       s["pending"]      or 0,
+            "win_rate":      wr,
+            "total_pnl":     round(float(s["total_pnl"]     or 0), 2),
+            "total_wagered": round(float(s["total_wagered"] or 0), 2),
+            "roi_pct":       round(float(s["total_pnl"] or 0) /
+                                   max(float(s["total_wagered"] or 1), 1) * 100, 1),
+            "by_city":       by_city,
+            "trades":        trades,
+        }
+    except Exception as e:
+        return {"error": str(e)}
