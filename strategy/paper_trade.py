@@ -749,7 +749,7 @@ MR_CITY_CONFIG = {
 
 MR_BET_PER_RANGE  = 1.0    # $1 per range — minimum Polymarket order
 MR_MAX_PRICE_C    = 12.0   # skip ranges above 12¢ — real data shows 70-71F at 5¢
-MR_MIN_PRICE_C    = 0.3    # skip sub-0.3¢ — likely illiquid
+MR_MIN_PRICE_C    = 0.1    # Polymarket min is ~0.1¢ — confirmed liquid from real data
 MR_MAX_TOTAL_C    = 9999.0  # paper trading — no cap, collect all data
 MR_N_RANGES       = 6      # buy 6 ranges = 77% win rate from real residual data
 MR_DAYS_OUT       = 2      # 2-day-ahead forecasts only (more bias = more edge)
