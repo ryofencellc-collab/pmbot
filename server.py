@@ -5771,7 +5771,7 @@ def mr_available_ranges(city: str, target_date: str):
             "type":      mtype,
             "price_c":   price_c,
             "accepting": accepting,
-            "buyable":   0.3 <= price_c <= 10.0 and accepting,
+            "buyable":   0.1 <= price_c <= 10.0 and accepting,
             "payout_on_1": round(100/price_c, 1) if price_c > 0 else None,
         })
 
