@@ -806,19 +806,19 @@ def mr_place_trade(city, target_date, days_out, forecast, corrected,
 
 
 def mr_already_bet(city, target_date):
-    """Check if we already have multi-range bets for this city+date."""
+    """Return set of market_ids already bet for this city+date."""
     try:
         conn = get_conn()
         c = conn.cursor()
         c.execute("""
-            SELECT COUNT(*) as n FROM mr_trades
-            WHERE city=%s AND target_date=%s AND outcome IS NULL
+            SELECT market_id FROM mr_trades
+            WHERE city=%s AND target_date=%s
         """, (city, str(target_date)))
-        n = c.fetchone()["n"]
+        rows = c.fetchall()
         conn.close()
-        return n > 0
+        return {r["market_id"] for r in rows}
     except Exception:
-        return False
+        return set()
 
 
 def run_mr_scan():
@@ -847,10 +847,10 @@ def run_mr_scan():
         if not cfg["active"]:
             continue
 
-        # Skip if already have bets for this city+date
-        if mr_already_bet(city, target):
-            print(f"  [MR] {city} — already have bets for {target}, skipping")
-            continue
+        # Get already-placed market_ids for this city+date
+        placed_market_ids = mr_already_bet(city, target)
+        if placed_market_ids:
+            print(f"  [MR] {city} — {len(placed_market_ids)} bets already placed, checking for new ranges")
 
         # Get forecast from Open-Meteo
         city_fc_cfg = ALL_CITIES.get(city)
@@ -960,6 +960,10 @@ def run_mr_scan():
                 break
 
             if matched_market is None:
+                continue
+
+            # Skip if already bet this specific market
+            if matched_market["id"] in placed_market_ids:
                 continue
 
             # Cost cap check
