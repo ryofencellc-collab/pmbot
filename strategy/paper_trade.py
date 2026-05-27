@@ -881,10 +881,12 @@ def run_mr_scan():
 
         # Build target ranges: 4 adjacent centered on corrected
         import math as _math
-        center_lo  = _math.floor(corrected)
-        # Build MR_N_RANGES centered on corrected: 3 below, center, 2 above
+        # Polymarket uses even-numbered 2°F ranges: 70-71, 72-73, 74-75 etc
+        # Align center to nearest even number
+        center_lo  = (_math.floor(corrected) // 2) * 2
         half = MR_N_RANGES // 2
-        target_los = [center_lo - half + i for i in range(MR_N_RANGES)]
+        # Step by 2 to match Polymarket range structure
+        target_los = [center_lo - (half * 2) + (i * 2) for i in range(MR_N_RANGES)]
 
         # Get Polymarket event for this city+date
         slug      = cfg["slug"]
