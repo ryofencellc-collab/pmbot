@@ -4242,13 +4242,16 @@ def backtest_rolling_mr():
 
             winner = next((r for r in range_bets if r["lo"] <= wu < r["hi"]), None)
 
+            # $1 per range bet (matches live MR_BET_PER_RANGE)
+            n_r = len(range_bets)
             if winner:
-                payout = round((100/winner["price_c"]-1) * winner["price_c"]/100 * 100, 2)
-                losing_cost = total_cost - winner["price_c"]
-                net_pnl = round(payout - losing_cost, 2)
+                payout = 100.0 / winner["price_c"]   # $ returned for $1 bet
+                profit_winner = payout - 1.0          # net profit on winner
+                losing_bets = n_r - 1                 # each loses $1
+                net_pnl = round(profit_winner - losing_bets, 2)
                 won = True
             else:
-                net_pnl = -total_cost
+                net_pnl = -float(n_r)  # all $1 bets lost
                 won = False
 
             all_bets.append({
@@ -4258,8 +4261,9 @@ def backtest_rolling_mr():
                 "roll_bias": round(roll_bias,1),
                 "corrected": round(corrected,1),
                 "wu": wu,
-                "n_ranges": len(range_bets),
-                "total_cost_c": round(total_cost,2),
+                "n_ranges": n_r,
+                "total_wagered_usd": float(n_r),
+                "avg_price_c": round(total_cost/n_r, 2),
                 "ranges": [{"lo":r["lo"],"hi":r["hi"],"price_c":r["price_c"]} for r in range_bets],
                 "winner": f"{winner['lo']}-{winner['hi']}" if winner else None,
                 "won": won,
