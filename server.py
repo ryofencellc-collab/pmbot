@@ -4118,6 +4118,197 @@ def implied_forecast_backtest():
     }
 
 
+
+@app.get("/backtest/rolling-mr")
+def backtest_rolling_mr():
+    """
+    Re-run the exact 40 MR bets that lost $40 with static bias,
+    but using ROLLING bias (window=10, prior days only) instead.
+
+    Same mechanism: for each qualifying day, buy N adjacent 2F
+    ranges at REAL historical prices (price_snapshots, 24-48h
+    before resolution), centered on rolling-bias-corrected forecast.
+    Check against REAL wu_actual.
+
+    100% real data. No new ingestion. Pure re-analysis.
+    """
+    import math
+    from collections import defaultdict
+
+    WINDOW = 10
+    N_RANGES = 6
+    MIN_PRICE_C = 0.1
+    MAX_PRICE_C = 12.0
+    MAX_TOTAL_C = 9999.0
+
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+
+        # Same forecast/actual series as rolling-bias endpoint
+        c.execute("""
+            SELECT DISTINCT ON (sl.city, sl.target_date)
+                sl.city, sl.target_date::text as target_date,
+                sl.consensus as forecast, sl.spread,
+                w.max_temp_f as wu_actual
+            FROM scan_log sl
+            JOIN wu_temps w
+                ON w.city = sl.city AND w.date = sl.target_date::text
+            WHERE sl.days_out = 2
+            AND sl.consensus IS NOT NULL
+            AND sl.city IN ('Atlanta','Dallas','NYC')
+            ORDER BY sl.city, sl.target_date, sl.scanned_at ASC
+        """)
+        fc_rows = [dict(r) for r in c.fetchall()]
+
+        # Real range market prices (48h-before-resolution, fallback 24h)
+        c.execute("""
+            SELECT
+                m.city,
+                LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10) as date,
+                m.target_low as lo,
+                m.target_high as hi,
+                (SELECT yes_price FROM price_snapshots ps
+                 WHERE ps.market_id = m.id::text
+                 AND ps.timestamp <= m.resolved_at - 172800
+                 ORDER BY ps.timestamp DESC LIMIT 1) as price_48h,
+                (SELECT yes_price FROM price_snapshots ps
+                 WHERE ps.market_id = m.id::text
+                 AND ps.timestamp <= m.resolved_at - 86400
+                 ORDER BY ps.timestamp DESC LIMIT 1) as price_24h
+            FROM markets m
+            WHERE m.market_type = 'range'
+            AND m.outcome IS NOT NULL
+            AND m.city IN ('Atlanta','Dallas','NYC')
+        """)
+        price_rows = c.fetchall()
+        conn.close()
+    except Exception as e:
+        return {"error": str(e)}
+
+    # index prices: (city, date, lo) -> price_c
+    prices = {}
+    for r in price_rows:
+        p = None
+        if r["price_48h"] is not None:
+            p = round(float(r["price_48h"])*100, 3)
+        elif r["price_24h"] is not None:
+            p = round(float(r["price_24h"])*100, 3)
+        if p and p >= MIN_PRICE_C:
+            prices[(r["city"], str(r["date"])[:10], float(r["lo"]))] = p
+
+    by_city = defaultdict(list)
+    for r in fc_rows:
+        by_city[r["city"]].append({
+            "date": r["target_date"],
+            "forecast": float(r["forecast"]),
+            "wu": float(r["wu_actual"]),
+            "spread": float(r["spread"]) if r["spread"] else None,
+        })
+    for city in by_city:
+        by_city[city].sort(key=lambda x: x["date"])
+
+    all_bets = []
+    for city, series in by_city.items():
+        n = len(series)
+        if n <= WINDOW:
+            continue
+
+        for i in range(WINDOW, n):
+            today = series[i]
+            history = series[i-WINDOW:i]
+            roll_bias = sum(h["forecast"] - h["wu"] for h in history) / WINDOW
+
+            corrected = today["forecast"] - roll_bias
+            wu = today["wu"]
+            date_str = today["date"]
+
+            center_lo = (math.floor(corrected) // 2) * 2
+            half = N_RANGES // 2
+            target_los = [center_lo - (half*2) + (j*2) for j in range(N_RANGES)]
+
+            range_bets = []
+            for lo in target_los:
+                p = prices.get((city, date_str, float(lo)))
+                if p and MIN_PRICE_C <= p <= MAX_PRICE_C:
+                    range_bets.append({"lo": lo, "hi": lo+1, "price_c": p})
+
+            if len(range_bets) < 2:
+                continue
+
+            total_cost = sum(r["price_c"] for r in range_bets)
+            if total_cost > MAX_TOTAL_C:
+                continue
+
+            winner = next((r for r in range_bets if r["lo"] <= wu < r["hi"]), None)
+
+            if winner:
+                payout = round((100/winner["price_c"]-1) * winner["price_c"]/100 * 100, 2)
+                losing_cost = total_cost - winner["price_c"]
+                net_pnl = round(payout - losing_cost, 2)
+                won = True
+            else:
+                net_pnl = -total_cost
+                won = False
+
+            all_bets.append({
+                "city": city,
+                "date": date_str,
+                "forecast": round(today["forecast"],1),
+                "roll_bias": round(roll_bias,1),
+                "corrected": round(corrected,1),
+                "wu": wu,
+                "n_ranges": len(range_bets),
+                "total_cost_c": round(total_cost,2),
+                "ranges": [{"lo":r["lo"],"hi":r["hi"],"price_c":r["price_c"]} for r in range_bets],
+                "winner": f"{winner['lo']}-{winner['hi']}" if winner else None,
+                "won": won,
+                "net_pnl": net_pnl,
+            })
+
+    if not all_bets:
+        return {"error": "no qualifying bets", "fc_rows": len(fc_rows), "price_entries": len(prices)}
+
+    n = len(all_bets)
+    wins = sum(1 for b in all_bets if b["won"])
+    total = round(sum(b["net_pnl"] for b in all_bets), 2)
+
+    by_city_summary = {}
+    for city in by_city:
+        cb = [b for b in all_bets if b["city"]==city]
+        if not cb: continue
+        cn = len(cb)
+        cw = sum(1 for b in cb if b["won"])
+        cp = round(sum(b["net_pnl"] for b in cb), 2)
+        by_city_summary[city] = {
+            "n_bets": cn, "wins": cw,
+            "win_rate": round(cw/cn*100,1),
+            "total_pnl": cp,
+            "ev_per_bet": round(cp/cn,2),
+            "avg_cost_c": round(sum(b["total_cost_c"] for b in cb)/cn,2),
+        }
+
+    return {
+        "method": f"rolling bias window={WINDOW}, {N_RANGES} adjacent ranges, real prices",
+        "comparison": {
+            "static_bias_result": {"n_bets": 40, "wins": 0, "total_pnl": -40.0, "win_rate": 0.0},
+            "rolling_bias_result": {
+                "n_bets": n, "wins": wins,
+                "win_rate": round(wins/n*100,1),
+                "total_pnl": total,
+                "ev_per_bet": round(total/n,2),
+                "profitable": total > 0,
+            },
+        },
+        "by_city": by_city_summary,
+        "all_bets": all_bets,
+        "conclusion": (
+            f"Rolling bias (window={WINDOW}): {n} bets, {wins} wins "
+            f"({round(wins/n*100,1)}%), ${total} total PnL "
+            f"vs static bias: 40 bets, 0 wins, -$40.00"
+        ),
+    }
+
 @app.get("/backtest/rolling-bias")
 def backtest_rolling_bias():
     """
