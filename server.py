@@ -4117,6 +4117,149 @@ def implied_forecast_backtest():
         ),
     }
 
+
+@app.get("/backtest/rolling-bias")
+def backtest_rolling_bias():
+    """
+    Test adaptive (rolling) bias vs static bias.
+
+    For each day with a forecast + wu_actual, compute a rolling bias
+    from the prior N days (forecast - wu_actual averaged), then check
+    how well forecast-minus-rolling-bias predicts that day's wu_actual,
+    compared to forecast-minus-static-bias.
+
+    100% real data: scan_log forecasts (days_out=2) joined to wu_temps.
+    No live trading, no money — pure analysis.
+    """
+    import math
+    from collections import defaultdict
+
+    STATIC_BIAS = {"Atlanta": 1.0, "Dallas": 0.0, "NYC": -1.25}
+    WINDOWS = [3, 5, 7, 10]
+
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("""
+            SELECT DISTINCT ON (sl.city, sl.target_date)
+                sl.city, sl.target_date::text as target_date,
+                sl.consensus as forecast, sl.spread,
+                w.max_temp_f as wu_actual
+            FROM scan_log sl
+            JOIN wu_temps w
+                ON w.city = sl.city AND w.date = sl.target_date::text
+            WHERE sl.days_out = 2
+            AND sl.consensus IS NOT NULL
+            AND sl.city IN ('Atlanta','Dallas','NYC')
+            ORDER BY sl.city, sl.target_date, sl.scanned_at ASC
+        """)
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+    except Exception as e:
+        return {"error": str(e)}
+
+    by_city = defaultdict(list)
+    for r in rows:
+        by_city[r["city"]].append({
+            "date": r["target_date"],
+            "forecast": float(r["forecast"]),
+            "wu": float(r["wu_actual"]),
+            "spread": float(r["spread"]) if r["spread"] else None,
+        })
+    for city in by_city:
+        by_city[city].sort(key=lambda x: x["date"])
+
+    results = {}
+    for city, series in by_city.items():
+        n = len(series)
+        if n < 8:
+            results[city] = {"n_days": n, "note": "not enough data"}
+            continue
+
+        static_bias = STATIC_BIAS.get(city, 0.0)
+
+        window_results = {}
+        for W in WINDOWS:
+            errors_static  = []
+            errors_rolling = []
+            day_detail = []
+
+            for i in range(W, n):
+                today = series[i]
+                history = series[i-W:i]
+                # rolling bias = avg(forecast - wu) over prior W days
+                roll_bias = sum(h["forecast"] - h["wu"] for h in history) / W
+
+                corrected_static  = today["forecast"] - static_bias
+                corrected_rolling = today["forecast"] - roll_bias
+
+                err_static  = corrected_static  - today["wu"]
+                err_rolling = corrected_rolling - today["wu"]
+
+                errors_static.append(err_static)
+                errors_rolling.append(err_rolling)
+
+                day_detail.append({
+                    "date": today["date"],
+                    "forecast": round(today["forecast"],1),
+                    "wu": today["wu"],
+                    "roll_bias": round(roll_bias,1),
+                    "corrected_static": round(corrected_static,1),
+                    "corrected_rolling": round(corrected_rolling,1),
+                    "err_static": round(err_static,1),
+                    "err_rolling": round(err_rolling,1),
+                })
+
+            n_eval = len(errors_static)
+            mae_static  = round(sum(abs(e) for e in errors_static)/n_eval, 2)
+            mae_rolling = round(sum(abs(e) for e in errors_rolling)/n_eval, 2)
+            rmse_static  = round(math.sqrt(sum(e*e for e in errors_static)/n_eval), 2)
+            rmse_rolling = round(math.sqrt(sum(e*e for e in errors_rolling)/n_eval), 2)
+
+            # within +-2F counts (relevant for 2F-wide markets)
+            within2_static  = sum(1 for e in errors_static  if abs(e) <= 2)
+            within2_rolling = sum(1 for e in errors_rolling if abs(e) <= 2)
+
+            window_results[f"window_{W}"] = {
+                "n_eval": n_eval,
+                "mae_static": mae_static,
+                "mae_rolling": mae_rolling,
+                "rmse_static": rmse_static,
+                "rmse_rolling": rmse_rolling,
+                "within_2F_static_pct": round(within2_static/n_eval*100,1),
+                "within_2F_rolling_pct": round(within2_rolling/n_eval*100,1),
+                "rolling_better": mae_rolling < mae_static,
+                "improvement_pct": round((mae_static-mae_rolling)/mae_static*100,1) if mae_static else 0,
+                "sample_days": day_detail[-10:],
+            }
+
+        results[city] = {
+            "n_days": n,
+            "static_bias_used": static_bias,
+            "windows": window_results,
+        }
+
+    # overall verdict
+    best_overall = {}
+    for city, r in results.items():
+        if "windows" not in r: continue
+        best_w = max(r["windows"].items(), key=lambda kv: kv[1]["improvement_pct"])
+        best_overall[city] = {
+            "best_window": best_w[0],
+            "improvement_pct": best_w[1]["improvement_pct"],
+            "rolling_better": best_w[1]["rolling_better"],
+            "mae_static": best_w[1]["mae_static"],
+            "mae_rolling": best_w[1]["mae_rolling"],
+        }
+
+    return {
+        "data_points_per_city": {c: len(by_city[c]) for c in by_city},
+        "results": results,
+        "best_window_per_city": best_overall,
+        "conclusion": "Rolling bias improves accuracy if mae_rolling < mae_static "
+                       "and improvement_pct is meaningfully positive (>10%) across windows."
+    }
+
 @app.get("/quant/multi-range-backtest")
 def multi_range_backtest():
     """
@@ -5682,6 +5825,259 @@ def verify_all():
             results["timestamps"]["timezone_correct"]
         ),
     }
+
+    return results
+
+
+@app.get("/mr/diagnostic")
+def mr_diagnostic():
+    """
+    Full MR scanner diagnostic — runs the complete scan logic for all 3 cities
+    but DOES NOT place any bets. Logs every single decision with exact data.
+    
+    Shows:
+    - Exact API response from Polymarket (market count, raw prices)
+    - Every market evaluated: question, price, direction parse, target match
+    - Exact reason each market was skipped or would be bet
+    - What placed_market_ids contains vs what API returns
+    - Type of market_id (int vs string) from API
+    """
+    import math as _math
+    import requests as req
+    import json as _json
+    from datetime import date, timedelta
+
+    GAMMA = "https://gamma-api.polymarket.com"
+
+    MR_CITY_CONFIG = {
+        "Atlanta": {"slug": "atlanta",  "bias": 11.5, "max_spread": 5.0,
+                    "lat": 33.749, "lon": -84.388},
+        "Dallas":  {"slug": "dallas",   "bias": 11.5, "max_spread": 5.0,
+                    "lat": 32.776, "lon": -96.797},
+        "NYC":     {"slug": "nyc",      "bias": 8.0,  "max_spread": 5.0,
+                    "lat": 40.713, "lon": -74.006},
+    }
+    MR_MIN_PRICE_C = 0.1
+    MR_MAX_PRICE_C = 12.0
+    MR_N_RANGES    = 6
+    MR_DAYS_OUT    = 2
+
+    today  = date.today()
+    target = today + timedelta(days=MR_DAYS_OUT)
+
+    results = {
+        "diagnostic_time": est_str(),
+        "target_date": str(target),
+        "cities": {}
+    }
+
+    # Get already placed market_ids from DB
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT city, market_id, question, entry_price_c FROM mr_trades WHERE target_date=%s",
+                  (str(target),))
+        placed_rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+    except Exception as e:
+        placed_rows = []
+        results["db_error"] = str(e)
+
+    placed_by_city = {}
+    for row in placed_rows:
+        city = row["city"]
+        if city not in placed_by_city:
+            placed_by_city[city] = []
+        placed_by_city[city].append({
+            "market_id": row["market_id"],
+            "market_id_type": type(row["market_id"]).__name__,
+            "question": row["question"],
+            "price_c": row["entry_price_c"],
+        })
+
+    results["already_placed"] = placed_by_city
+
+    for city, cfg in MR_CITY_CONFIG.items():
+        city_result = {
+            "forecast": None,
+            "corrected": None,
+            "spread": None,
+            "target_los": None,
+            "skip_reason": None,
+            "api_response": {},
+            "markets_evaluated": [],
+            "would_bet": [],
+        }
+
+        # Step 1: Get forecast
+        try:
+            from strategy.early_entry import ALL_CITIES, get_multi_model_forecast
+            city_fc_cfg = ALL_CITIES.get(city)
+            date_str = target.strftime("%Y-%m-%d")
+            fc = get_multi_model_forecast(city_fc_cfg, date_str)
+            if fc and fc.get("consensus"):
+                forecast  = round(float(fc["consensus"]), 2)
+                spread    = round(float(fc.get("spread", 0)), 2)
+                bias      = cfg["bias"]
+                corrected = round(forecast - bias, 1)
+                city_result["forecast"]  = forecast
+                city_result["corrected"] = corrected
+                city_result["spread"]    = spread
+                city_result["bias"]      = bias
+            else:
+                city_result["skip_reason"] = "No forecast data"
+                results["cities"][city] = city_result
+                continue
+        except Exception as e:
+            city_result["skip_reason"] = f"Forecast error: {e}"
+            results["cities"][city] = city_result
+            continue
+
+        # Step 2: Spread check
+        if spread > cfg["max_spread"]:
+            city_result["skip_reason"] = f"Spread {spread}° > {cfg['max_spread']}°"
+            results["cities"][city] = city_result
+            continue
+
+        # Step 3: Build target_los
+        center_lo  = (_math.floor(corrected) // 2) * 2
+        half       = MR_N_RANGES // 2
+        target_los = [center_lo - (half * 2) + (i * 2) for i in range(MR_N_RANGES)]
+        city_result["target_los"] = target_los
+        city_result["center_lo"]  = center_lo
+
+        # Step 4: Fetch Polymarket markets
+        slug      = cfg["slug"]
+        slug_date = target.strftime("%B-%-d").lower()
+        event_slug = f"highest-temperature-in-{slug}-on-{slug_date}-{target.year}"
+        city_result["event_slug"] = event_slug
+
+        try:
+            r = req.get(f"{GAMMA}/events",
+                        params={"slug": event_slug},
+                        timeout=15,
+                        headers={"User-Agent": "PolyEdge/1.0"})
+            city_result["api_response"]["status_code"] = r.status_code
+            city_result["api_response"]["url"] = r.url
+
+            if r.status_code != 200:
+                city_result["skip_reason"] = f"API returned {r.status_code}"
+                results["cities"][city] = city_result
+                continue
+
+            data = r.json()
+            if not data or not isinstance(data, list):
+                city_result["skip_reason"] = "API returned empty/non-list"
+                city_result["api_response"]["raw_type"] = str(type(data))
+                results["cities"][city] = city_result
+                continue
+
+            if not data[0].get("markets"):
+                city_result["skip_reason"] = "No markets in event"
+                city_result["api_response"]["event_keys"] = list(data[0].keys())
+                results["cities"][city] = city_result
+                continue
+
+            markets = data[0].get("markets", [])
+            city_result["api_response"]["total_markets"] = len(markets)
+
+        except Exception as e:
+            city_result["skip_reason"] = f"API error: {e}"
+            results["cities"][city] = city_result
+            continue
+
+        # Step 5: Evaluate every market
+        placed_ids_for_city = {p["market_id"] for p in placed_by_city.get(city, [])}
+
+        for m in markets:
+            mid      = m.get("id")
+            question = m.get("question", "")
+            accepting = m.get("acceptingOrders", False)
+
+            # Raw price
+            prices = m.get("outcomePrices", "[]")
+            if isinstance(prices, str):
+                try:
+                    prices = _json.loads(prices)
+                except:
+                    prices = []
+            yes_price = float(prices[0]) if prices else 0.0
+            price_c   = round(yes_price * 100, 3)
+
+            # Parse range
+            import re as _re
+            orig = question.lower()
+            q = orig[:orig.rfind(" on ")] if " on " in orig else orig
+            nums = [float(n) for n in _re.findall(r"-?\d+\.?\d*", q)
+                    if -30 < float(n) < 150]
+
+            direction = "unknown"
+            lo = hi = None
+            if nums:
+                if "or higher" in orig or "or above" in orig:
+                    lo, hi, direction = nums[0], 999, "higher"
+                elif "or below" in orig or "or lower" in orig:
+                    lo, hi, direction = -999, nums[-1], "lower"
+                elif len(nums) >= 2:
+                    lo, hi, direction = min(nums), max(nums), "exact"
+
+            # Check target match
+            matched_target = None
+            if direction == "exact" and lo is not None:
+                for tlo in target_los:
+                    if abs(lo - tlo) < 0.5:
+                        matched_target = tlo
+                        break
+
+            # Dedup check
+            mid_str = str(mid)
+            already_placed = mid_str in placed_ids_for_city or str(mid) in placed_ids_for_city
+
+            # Decision
+            if not accepting:
+                decision = "SKIP: acceptingOrders=False"
+            elif direction != "exact":
+                decision = f"SKIP: direction={direction} (not exact)"
+            elif matched_target is None:
+                decision = f"SKIP: lo={lo} not in target_los={target_los}"
+            elif price_c < MR_MIN_PRICE_C:
+                decision = f"SKIP: price {price_c}¢ < min {MR_MIN_PRICE_C}¢"
+            elif price_c > MR_MAX_PRICE_C:
+                decision = f"SKIP: price {price_c}¢ > max {MR_MAX_PRICE_C}¢"
+            elif already_placed:
+                decision = f"SKIP: already placed (market_id={mid_str})"
+            else:
+                decision = f"✅ WOULD BET @ {price_c}¢ → wins ${round(100/price_c,1)}"
+                city_result["would_bet"].append({
+                    "question": question,
+                    "lo": lo, "hi": hi,
+                    "price_c": price_c,
+                    "payout_on_1": round(100/price_c, 1),
+                    "market_id": mid_str,
+                })
+
+            city_result["markets_evaluated"].append({
+                "question":       question[:70],
+                "market_id":      mid_str,
+                "market_id_type": type(mid).__name__,
+                "accepting":      accepting,
+                "price_c":        price_c,
+                "lo":             lo,
+                "hi":             hi,
+                "direction":      direction,
+                "matched_target": matched_target,
+                "already_placed": already_placed,
+                "decision":       decision,
+            })
+
+        city_result["summary"] = {
+            "total_markets":    len(markets),
+            "would_bet_count":  len(city_result["would_bet"]),
+            "total_cost_c":     round(sum(b["price_c"] for b in city_result["would_bet"]), 2),
+            "already_placed":   len(placed_ids_for_city),
+        }
+
+        results["cities"][city] = city_result
 
     return results
 
