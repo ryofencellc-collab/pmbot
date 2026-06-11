@@ -725,9 +725,9 @@ MR_CITY_CONFIG = {
         "slug":      "atlanta",
         "lat":       33.749,
         "lon":       -84.388,
-        "bias":      11.5,   # avg_bias=11.32°F across 62 data points
-        "max_spread": 5.0,   # reliability drops above this
-        "active":    True,
+        "bias":      11.5,
+        "max_spread": 5.0,
+        "active":    False,  # rolling-bias backtest: 0/8 wins, excluded
     },
     "Dallas": {
         "slug":      "dallas",
@@ -821,6 +821,47 @@ def mr_already_bet(city, target_date):
         return set()
 
 
+
+MR_ROLLING_WINDOW = 10  # days of forecast-vs-actual history to average
+
+def get_rolling_bias(city, target_date, fallback_bias):
+    """
+    Compute rolling bias = avg(forecast - wu_actual) over the prior
+    MR_ROLLING_WINDOW days, using only data that would have been
+    known by target_date (causal, no lookahead).
+
+    Falls back to the static bias if insufficient history.
+    """
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("""
+            SELECT sl.target_date::text as d, sl.consensus as fc, w.max_temp_f as wu
+            FROM (
+                SELECT DISTINCT ON (target_date) target_date, consensus
+                FROM scan_log
+                WHERE city=%s AND days_out=2 AND consensus IS NOT NULL
+                AND target_date < %s
+                ORDER BY target_date DESC, scanned_at ASC
+            ) sl
+            JOIN wu_temps w ON w.city=%s AND w.date = sl.target_date::text
+            ORDER BY sl.target_date DESC
+            LIMIT %s
+        """, (city, str(target_date), city, MR_ROLLING_WINDOW))
+        rows = c.fetchall()
+        conn.close()
+    except Exception as e:
+        print(f"  [MR] {city} — rolling bias query error: {e}")
+        return fallback_bias, 0
+
+    if len(rows) < MR_ROLLING_WINDOW:
+        return fallback_bias, len(rows)
+
+    diffs = [float(r["fc"]) - float(r["wu"]) for r in rows]
+    roll_bias = sum(diffs) / len(diffs)
+    return round(roll_bias, 2), len(rows)
+
+
 def run_mr_scan():
     """
     Multi-range scanner.
@@ -867,8 +908,11 @@ def run_mr_scan():
 
         forecast  = fc["consensus"]
         spread    = fc.get("spread", 0)
-        bias      = cfg["bias"]
+        roll_bias, n_hist = get_rolling_bias(city, target, cfg["bias"])
+        bias      = roll_bias
         corrected = round(forecast - bias, 1)
+        print(f"  [MR] {city} — bias: rolling({n_hist}d)={roll_bias:.2f} "
+              f"(static fallback={cfg['bias']})")
 
         # Spread filter — bias less reliable when models disagree
         if spread > cfg["max_spread"]:
