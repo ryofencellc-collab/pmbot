@@ -4289,7 +4289,7 @@ def backtest_rolling_mr():
             "win_rate": round(cw/cn*100,1),
             "total_pnl": cp,
             "ev_per_bet": round(cp/cn,2),
-            "avg_cost_c": round(sum(b["total_cost_c"] for b in cb)/cn,2),
+            "avg_wagered_usd": round(sum(b["total_wagered_usd"] for b in cb)/cn,2),
         }
 
     return {
