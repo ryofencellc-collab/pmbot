@@ -4451,7 +4451,7 @@ def backtest_buy_forecast_range():
                 (SELECT sl.consensus
                  FROM scan_log sl
                  WHERE sl.city = m.city
-                   AND sl.target_date = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)::date
+                   AND sl.target_date::text = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)
                    AND sl.days_out = 2
                    AND sl.consensus IS NOT NULL
                    AND sl.gfs_temp IS NOT NULL
@@ -4462,7 +4462,7 @@ def backtest_buy_forecast_range():
                 (SELECT sl.spread
                  FROM scan_log sl
                  WHERE sl.city = m.city
-                   AND sl.target_date = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)::date
+                   AND sl.target_date::text = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)
                    AND sl.days_out = 2
                    AND sl.consensus IS NOT NULL
                    AND sl.gfs_temp IS NOT NULL
