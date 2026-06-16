@@ -4801,6 +4801,7 @@ def scan_inefficiencies():
         },
         "note": "Score = magnitude of signal. Higher = more interesting. Always verify on Polymarket before betting."
     }
+
 @app.get("/backtest/rolling-bias")
 def backtest_rolling_bias():
     """
