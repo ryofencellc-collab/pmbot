@@ -1218,28 +1218,6 @@ def backtest_real(days: int = 30, max_price: float = 0.05, min_days: int = 3):
         return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
 
 
-@app.get("/backtest/early-entry")
-def backtest_early_entry(days: int = 30, window: float = 2.0, max_price: float = 0.05):
-    """
-    Backtest our actual early entry strategy.
-    Finds markets that were cheap (under max_price) AND 
-    where actual temp was within window degrees of the range.
-    Shows if we would have won.
-    """
-    try:
-        import sys, os
-        sys.path.insert(0, os.path.dirname(__file__))
-        from backtest_early_entry import run_backtest
-        result = run_backtest(
-            days_back=days,
-            entry_price_max=max_price,
-            forecast_window=window
-        )
-        return result
-    except Exception as e:
-        import traceback
-        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
-
 
 @app.get("/backtest/honda")
 def backtest_honda(days: int = 30):
@@ -1868,28 +1846,6 @@ def backtest_real(days: int = 30, max_price: float = 0.05, min_days: int = 3):
         import traceback
         return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
 
-
-@app.get("/backtest/early-entry")
-def backtest_early_entry(days: int = 30, window: float = 2.0, max_price: float = 0.05):
-    """
-    Backtest our actual early entry strategy.
-    Finds markets that were cheap (under max_price) AND 
-    where actual temp was within window degrees of the range.
-    Shows if we would have won.
-    """
-    try:
-        import sys, os
-        sys.path.insert(0, os.path.dirname(__file__))
-        from backtest_early_entry import run_backtest
-        result = run_backtest(
-            days_back=days,
-            entry_price_max=max_price,
-            forecast_window=window
-        )
-        return result
-    except Exception as e:
-        import traceback
-        return {"status": "error", "message": str(e), "trace": traceback.format_exc()[:500]}
 
 
 @app.get("/backtest/honda")
