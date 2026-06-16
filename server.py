@@ -4313,6 +4313,126 @@ def backtest_rolling_mr():
         ),
     }
 
+
+@app.get("/admin/refetch-wu-actuals")
+def refetch_wu_actuals():
+    """
+    Re-fetch correct daily max temperatures from WU for all backtest dates.
+    
+    The bug: wu_temps was populated by an ingest that ran early morning,
+    so max(temps) only captured morning readings, not the true daily max.
+    
+    The fix: for past dates, WU API returns ALL 24 hours of observations.
+    max(all_hourly_temps) = true daily max = what Polymarket resolves against.
+    
+    This overwrites wu_temps with correct values for May 1 - June 15.
+    """
+    import requests as req
+    import time
+    from datetime import date, timedelta
+
+    WU_KEY = "e1f10a1e78da46f5b10a1e78da96f525"
+    STATIONS = {
+        "Atlanta": {"station": "KATL", "unit": "e"},
+        "Dallas":  {"station": "KDAL", "unit": "e"},
+        "NYC":     {"station": "KLGA", "unit": "e"},
+    }
+
+    start = date(2026, 5, 1)
+    end   = date.today() - timedelta(days=1)  # yesterday (today not finalized)
+
+    results = {}
+    total_updated = 0
+    errors = []
+
+    for city, cfg in STATIONS.items():
+        station = cfg["station"]
+        city_results = []
+        current = start
+
+        while current <= end:
+            date_str = current.strftime("%Y-%m-%d")
+            date_fmt = current.strftime("%Y%m%d")
+
+            try:
+                r = req.get(
+                    f"https://api.weather.com/v1/location/{station}:9:US/observations/historical.json",
+                    params={"apiKey": WU_KEY, "units": cfg["unit"], "startDate": date_fmt},
+                    timeout=15,
+                    headers={"User-Agent": "PolyEdge/1.0"}
+                )
+
+                if r.status_code != 200:
+                    errors.append(f"{city} {date_str}: HTTP {r.status_code}")
+                    current += timedelta(days=1)
+                    time.sleep(0.3)
+                    continue
+
+                obs = r.json().get("observations", [])
+                temps = [float(o["temp"]) for o in obs if o.get("temp") is not None]
+
+                if not temps:
+                    errors.append(f"{city} {date_str}: no observations")
+                    current += timedelta(days=1)
+                    time.sleep(0.3)
+                    continue
+
+                true_max = max(temps)
+                n_obs = len(obs)
+
+                # Get what we currently have stored
+                conn = get_conn()
+                c = conn.cursor()
+                c.execute(
+                    "SELECT max_temp_f FROM wu_temps WHERE city=%s AND date=%s",
+                    (city, date_str)
+                )
+                existing = c.fetchone()
+                old_val = float(existing["max_temp_f"]) if existing else None
+
+                # UPDATE or INSERT with correct value
+                c.execute("""
+                    INSERT INTO wu_temps (city, station, date, max_temp_f)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (city, date)
+                    DO UPDATE SET max_temp_f = EXCLUDED.max_temp_f
+                """, (city, station, date_str, true_max))
+                conn.commit()
+                conn.close()
+
+                total_updated += 1
+                city_results.append({
+                    "date": date_str,
+                    "n_obs": n_obs,
+                    "old_max": old_val,
+                    "new_max": true_max,
+                    "corrected_by": round(true_max - old_val, 1) if old_val else None,
+                })
+
+            except Exception as e:
+                errors.append(f"{city} {date_str}: {e}")
+
+            current += timedelta(days=1)
+            time.sleep(0.35)  # rate limit
+
+        results[city] = {
+            "dates_updated": len(city_results),
+            "avg_correction": round(
+                sum(r["corrected_by"] for r in city_results if r["corrected_by"] is not None) /
+                max(1, sum(1 for r in city_results if r["corrected_by"] is not None)), 2
+            ),
+            "sample": city_results[:5],
+            "all": city_results,
+        }
+
+    return {
+        "total_updated": total_updated,
+        "date_range": f"{start} to {end}",
+        "errors": errors[:20],
+        "results": results,
+        "next_step": "Run /backtest/rolling-mr to get accurate results with corrected data",
+    }
+
 @app.get("/backtest/rolling-bias")
 def backtest_rolling_bias():
     """
