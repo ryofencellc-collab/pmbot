@@ -4418,6 +4418,200 @@ def refetch_wu_city(city: str):
         "next_step":     "Run /admin/refetch-wu/[next city], then /backtest/rolling-mr",
     }
 
+
+@app.get("/backtest/buy-forecast-range")
+def backtest_buy_forecast_range():
+    """
+    Simplest possible backtest:
+    For every resolved Dallas/NYC range market, buy the single 2F range
+    that contains the raw 2-day-ahead forecast (no bias correction).
+    
+    Check: does that range win? What was it priced at?
+    If win_rate > price, we have edge.
+    
+    100% real data: scan_log + price_snapshots + markets + wu_temps.
+    """
+    import math
+    from collections import defaultdict
+
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+
+        c.execute("""
+            SELECT
+                m.id::text          as market_id,
+                m.city,
+                m.target_low        as lo,
+                m.target_high       as hi,
+                m.outcome,
+                LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10) as date,
+                m.resolved_at,
+                -- 2-day-ahead forecast: earliest scan at days_out=2
+                (SELECT sl.consensus
+                 FROM scan_log sl
+                 WHERE sl.city = m.city
+                   AND sl.target_date = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)::date
+                   AND sl.days_out = 2
+                   AND sl.consensus IS NOT NULL
+                   AND sl.gfs_temp IS NOT NULL
+                   AND sl.ukmo_temp IS NOT NULL
+                 ORDER BY sl.scanned_at ASC
+                 LIMIT 1) as forecast,
+                -- spread at that same snapshot
+                (SELECT sl.spread
+                 FROM scan_log sl
+                 WHERE sl.city = m.city
+                   AND sl.target_date = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)::date
+                   AND sl.days_out = 2
+                   AND sl.consensus IS NOT NULL
+                   AND sl.gfs_temp IS NOT NULL
+                   AND sl.ukmo_temp IS NOT NULL
+                 ORDER BY sl.scanned_at ASC
+                 LIMIT 1) as spread,
+                -- price 48h before resolution (realistic entry)
+                (SELECT ps.yes_price * 100
+                 FROM price_snapshots ps
+                 WHERE ps.market_id = m.id::text
+                   AND ps.timestamp <= m.resolved_at - 172800
+                 ORDER BY ps.timestamp DESC
+                 LIMIT 1) as price_c,
+                -- actual temp
+                (SELECT w.max_temp_f
+                 FROM wu_temps w
+                 WHERE w.city = m.city
+                   AND w.date = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)
+                 LIMIT 1) as wu_actual
+            FROM markets m
+            WHERE m.market_type = 'range'
+              AND m.outcome IS NOT NULL
+              AND m.city IN ('Dallas', 'NYC')
+              AND m.resolved_at IS NOT NULL
+            ORDER BY m.city, m.resolved_at
+        """)
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+    except Exception as e:
+        return {"error": str(e)}
+
+    # Group by city+date, find which range the forecast falls in
+    from collections import defaultdict
+    by_date = defaultdict(list)
+    for r in rows:
+        if r["forecast"] and r["price_c"] and r["wu_actual"]:
+            key = (r["city"], r["date"])
+            by_date[key].append(r)
+
+    BET = 1.0
+    results = []
+    skipped = 0
+
+    for (city, date), markets in by_date.items():
+        # Find the range that contains the forecast
+        fc = float(markets[0]["forecast"])
+        spread = float(markets[0]["spread"] or 0)
+        wu = float(markets[0]["wu_actual"])
+
+        # Find market whose range contains forecast
+        target = None
+        for m in markets:
+            lo = float(m["lo"])
+            hi = float(m["hi"])
+            price_c = float(m["price_c"])
+            if price_c < 0.1 or price_c > 50:
+                continue
+            if lo <= fc < hi:
+                target = m
+                break
+
+        if not target:
+            skipped += 1
+            continue
+
+        lo = float(target["lo"])
+        hi = float(target["hi"])
+        price_c = float(target["price_c"])
+        won = target["outcome"] == "Yes"
+        
+        if won:
+            payout = round((100/price_c - 1) * BET, 2)
+            net_pnl = payout
+        else:
+            net_pnl = -BET
+
+        results.append({
+            "city":      city,
+            "date":      date,
+            "forecast":  round(fc, 1),
+            "spread":    round(spread, 1),
+            "wu_actual": wu,
+            "range":     f"{lo:.0f}-{hi:.0f}",
+            "price_c":   round(price_c, 2),
+            "payout_if_win": round(100/price_c, 1),
+            "outcome":   target["outcome"],
+            "won":       won,
+            "net_pnl":   net_pnl,
+            "fc_error":  round(fc - wu, 1),
+        })
+
+    if not results:
+        return {"error": "no qualifying bets", "skipped": skipped}
+
+    n = len(results)
+    wins = sum(1 for r in results if r["won"])
+    total_pnl = round(sum(r["net_pnl"] for r in results), 2)
+    avg_price = round(sum(r["price_c"] for r in results)/n, 2)
+    win_rate = round(wins/n*100, 1)
+
+    # By city
+    by_city = {}
+    for city in ["Dallas", "NYC"]:
+        cb = [r for r in results if r["city"] == city]
+        if not cb: continue
+        cw = sum(1 for r in cb if r["won"])
+        cp = round(sum(r["net_pnl"] for r in cb), 2)
+        ca = round(sum(r["price_c"] for r in cb)/len(cb), 2)
+        by_city[city] = {
+            "n": len(cb), "wins": cw,
+            "win_rate_pct": round(cw/len(cb)*100,1),
+            "avg_price_c": ca,
+            "breakeven_win_rate_pct": round(ca, 1),
+            "total_pnl": cp,
+            "has_edge": (cw/len(cb)*100) > ca,
+        }
+
+    # By spread bucket
+    by_spread = {}
+    for label, lo, hi in [("<2°",0,2),("2-4°",2,4),("4-6°",4,6),(">6°",6,999)]:
+        sb = [r for r in results if lo <= r["spread"] < hi]
+        if not sb: continue
+        sw = sum(1 for r in sb if r["won"])
+        by_spread[label] = {
+            "n": len(sb),
+            "wins": sw,
+            "win_rate_pct": round(sw/len(sb)*100,1),
+            "avg_price_c": round(sum(r["price_c"] for r in sb)/len(sb),2),
+        }
+
+    return {
+        "strategy": "Buy raw forecast range, no bias correction, $1/bet",
+        "summary": {
+            "n_bets": n,
+            "wins": wins,
+            "win_rate_pct": win_rate,
+            "avg_price_c": avg_price,
+            "breakeven_win_rate_pct": avg_price,
+            "has_edge": win_rate > avg_price,
+            "total_pnl_1usd": total_pnl,
+            "total_pnl_10usd": round(total_pnl * 10, 2),
+            "skipped_no_price_or_forecast": skipped,
+        },
+        "by_city": by_city,
+        "by_spread_bucket": by_spread,
+        "all_bets": sorted(results, key=lambda x: (x["city"], x["date"])),
+        "verdict": "EDGE EXISTS if win_rate_pct > avg_price_c (breakeven)"
+    }
+
 @app.get("/backtest/rolling-bias")
 def backtest_rolling_bias():
     """
