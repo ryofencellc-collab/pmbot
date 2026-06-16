@@ -4612,6 +4612,195 @@ def backtest_buy_forecast_range():
         "verdict": "EDGE EXISTS if win_rate_pct > avg_price_c (breakeven)"
     }
 
+
+@app.get("/scanner/inefficiencies")
+def scan_inefficiencies():
+    """
+    Scans all open Polymarket markets for pricing inefficiencies.
+
+    Detects:
+    1. YES+NO spread gap (wider than normal = stale/thin)
+    2. Price stagnation (no movement in 48h+ despite open market)  
+    3. Extreme prices (>95c or <5c) that may be mispriced
+    4. Near-resolution markets not yet at 99c
+
+    Returns ranked list of opportunities with signal type and magnitude.
+    Uses only our existing price_snapshots + markets data.
+    """
+    import requests as req
+    import json as _json
+    from datetime import datetime, timezone, timedelta
+
+    GAMMA = "https://gamma-api.polymarket.com"
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+
+        # Get all open markets with their latest 2 price snapshots
+        c.execute("""
+            WITH latest AS (
+                SELECT DISTINCT ON (market_id)
+                    market_id, yes_price, timestamp
+                FROM price_snapshots
+                ORDER BY market_id, timestamp DESC
+            ),
+            prev AS (
+                SELECT DISTINCT ON (market_id)
+                    market_id, yes_price as prev_price, timestamp as prev_ts
+                FROM price_snapshots
+                WHERE timestamp < %s
+                ORDER BY market_id, timestamp DESC
+            )
+            SELECT
+                m.id::text as market_id,
+                m.question,
+                m.resolved_at,
+                m.market_type,
+                l.yes_price as yes,
+                l.timestamp as last_ts,
+                p.prev_price,
+                p.prev_ts
+            FROM markets m
+            JOIN latest l ON l.market_id = m.id::text
+            LEFT JOIN prev p ON p.market_id = m.id::text
+            WHERE m.outcome IS NULL
+              AND l.yes_price IS NOT NULL
+              AND l.yes_price > 0.001
+              AND l.yes_price < 0.999
+            ORDER BY l.timestamp DESC
+        """, (now_ts - 172800,))  # prev = 48h ago
+
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+    except Exception as e:
+        return {"error": str(e)}
+
+    # Fetch current Polymarket data for top candidates
+    # to get NO price and volume
+    try:
+        r = req.get(f"{GAMMA}/markets",
+                    params={"active": "true", "closed": "false",
+                            "limit": 500},
+                    timeout=15,
+                    headers={"User-Agent": "PolyEdge/1.0"})
+        live_markets = {str(m["id"]): m for m in r.json()} if r.status_code == 200 else {}
+    except:
+        live_markets = {}
+
+    signals = []
+
+    for row in rows:
+        mid = row["market_id"]
+        yes = float(row["yes"])
+        question = row["question"] or ""
+        last_ts = row["last_ts"] or 0
+        prev_price = float(row["prev_price"]) if row["prev_price"] else None
+        resolved_at = row["resolved_at"]
+
+        # Get live data if available
+        live = live_markets.get(mid, {})
+        try:
+            prices = live.get("outcomePrices", "[]")
+            if isinstance(prices, str):
+                prices = _json.loads(prices)
+            no = float(prices[1]) if len(prices) > 1 else (1 - yes)
+        except:
+            no = 1 - yes
+
+        volume = float(live.get("volume", 0) or 0)
+        spread_gap = round(1 - yes - no, 4)
+        hours_stale = round((now_ts - last_ts) / 3600, 1) if last_ts else None
+        price_move_48h = round(yes - prev_price, 4) if prev_price is not None else None
+        days_to_resolve = round((resolved_at - now_ts) / 86400, 1) if resolved_at else None
+
+        market_signals = []
+
+        # SIGNAL 1: Wide spread gap (illiquid/stale)
+        if spread_gap > 0.08:
+            market_signals.append({
+                "type": "WIDE_SPREAD",
+                "detail": f"YES+NO gap={spread_gap:.1%} — market may be stale or thin",
+                "score": min(spread_gap * 100, 30),
+            })
+
+        # SIGNAL 2: Price frozen — no movement in 48h
+        if price_move_48h is not None and abs(price_move_48h) < 0.01 and volume < 1000:
+            market_signals.append({
+                "type": "STALE_PRICE",
+                "detail": f"Price unchanged for 48h (move={price_move_48h:.3f}), volume=${volume:.0f}",
+                "score": 10,
+            })
+
+        # SIGNAL 3: Near resolution but not at extreme
+        if days_to_resolve is not None and 0 < days_to_resolve < 2:
+            if 0.10 < yes < 0.90:
+                market_signals.append({
+                    "type": "NEAR_RESOLUTION_UNCERTAIN",
+                    "detail": f"Resolves in {days_to_resolve:.1f} days, still at {yes:.0%}",
+                    "score": 20,
+                })
+
+        # SIGNAL 4: Extreme low price on imminent market
+        if days_to_resolve is not None and 0 < days_to_resolve < 3 and yes < 0.05:
+            market_signals.append({
+                "type": "EXTREME_LOW_IMMINENT",
+                "detail": f"YES={yes:.1%} but resolves in {days_to_resolve:.1f} days — worth checking",
+                "score": 15,
+            })
+
+        # SIGNAL 5: Extreme high price on imminent market
+        if days_to_resolve is not None and 0 < days_to_resolve < 3 and yes > 0.95:
+            market_signals.append({
+                "type": "EXTREME_HIGH_IMMINENT",
+                "detail": f"YES={yes:.1%}, resolves in {days_to_resolve:.1f} days — nearly resolved",
+                "score": 5,
+            })
+
+        # SIGNAL 6: Large price move in 48h (momentum/mispricing)
+        if price_move_48h is not None and abs(price_move_48h) > 0.15:
+            direction = "UP" if price_move_48h > 0 else "DOWN"
+            market_signals.append({
+                "type": f"LARGE_MOVE_{direction}",
+                "detail": f"Price moved {price_move_48h:+.1%} in 48h — momentum or correction?",
+                "score": min(abs(price_move_48h) * 50, 25),
+            })
+
+        if market_signals:
+            total_score = sum(s["score"] for s in market_signals)
+            signals.append({
+                "market_id":      mid,
+                "question":       question[:100],
+                "yes_price":      round(yes, 4),
+                "no_price":       round(no, 4),
+                "spread_gap":     spread_gap,
+                "volume_usd":     round(volume, 0),
+                "days_to_resolve": days_to_resolve,
+                "price_48h_ago":  round(prev_price, 4) if prev_price else None,
+                "price_move_48h": price_move_48h,
+                "signals":        market_signals,
+                "total_score":    total_score,
+                "polymarket_url": f"https://polymarket.com/event/{mid}",
+            })
+
+    # Sort by total score descending
+    signals.sort(key=lambda x: -x["total_score"])
+
+    return {
+        "scanned_at":      est_str(),
+        "markets_scanned": len(rows),
+        "live_data_fetched": len(live_markets),
+        "signals_found":   len(signals),
+        "top_opportunities": signals[:25],
+        "signal_counts": {
+            "WIDE_SPREAD": sum(1 for s in signals if any(x["type"]=="WIDE_SPREAD" for x in s["signals"])),
+            "STALE_PRICE": sum(1 for s in signals if any(x["type"]=="STALE_PRICE" for x in s["signals"])),
+            "NEAR_RESOLUTION_UNCERTAIN": sum(1 for s in signals if any(x["type"]=="NEAR_RESOLUTION_UNCERTAIN" for x in s["signals"])),
+            "LARGE_MOVE": sum(1 for s in signals if any("LARGE_MOVE" in x["type"] for x in s["signals"])),
+        },
+        "note": "Score = magnitude of signal. Higher = more interesting. Always verify on Polymarket before betting."
+    }
 @app.get("/backtest/rolling-bias")
 def backtest_rolling_bias():
     """
