@@ -4707,6 +4707,122 @@ def scan_inefficiencies():
         "top_25": signals[:25],
     }
 
+
+@app.get("/backtest/early-entry")
+def backtest_early_entry():
+    """
+    Test: buy forecast range at 5-7 days out (cheap) vs 2 days out (expensive).
+    Same win rate, but price is 2-5c instead of 15-30c = potential edge.
+    """
+    from datetime import datetime, timezone
+
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("""
+            SELECT
+                m.id::text as market_id,
+                m.question,
+                m.city,
+                m.target_low as lo,
+                m.target_high as hi,
+                m.outcome,
+                LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10) as date,
+                -- forecast at days_out=2 (need all 3 models)
+                (SELECT sl.consensus FROM scan_log sl
+                 WHERE sl.city = m.city
+                   AND sl.target_date::text = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)
+                   AND sl.days_out = 2
+                   AND sl.gfs_temp IS NOT NULL
+                   AND sl.ukmo_temp IS NOT NULL
+                 ORDER BY sl.scanned_at ASC LIMIT 1) as forecast,
+                -- price at 5-7 days before resolution
+                (SELECT ps.yes_price * 100 FROM price_snapshots ps
+                 WHERE ps.market_id = m.id::text
+                   AND ps.timestamp <= m.resolved_at - 432000
+                   AND ps.timestamp >= m.resolved_at - 604800
+                 ORDER BY ps.timestamp DESC LIMIT 1) as price_5_7d,
+                -- price at 48h before resolution
+                (SELECT ps.yes_price * 100 FROM price_snapshots ps
+                 WHERE ps.market_id = m.id::text
+                   AND ps.timestamp <= m.resolved_at - 172800
+                 ORDER BY ps.timestamp DESC LIMIT 1) as price_48h,
+                -- actual temp
+                (SELECT w.max_temp_f FROM wu_temps w
+                 WHERE w.city = m.city
+                   AND w.date = LEFT(CAST(TO_TIMESTAMP(m.resolved_at) AS TEXT), 10)
+                 LIMIT 1) as wu_actual
+            FROM markets m
+            WHERE m.market_type = 'range'
+              AND m.outcome IS NOT NULL
+              AND m.city IN ('Dallas','NYC','Atlanta')
+            ORDER BY m.city, m.resolved_at
+        """)
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+    except Exception as e:
+        return {"error": str(e)}
+
+    early = []
+    late  = []
+
+    for r in rows:
+        if not r["forecast"] or not r["wu_actual"]:
+            continue
+        fc  = float(r["forecast"])
+        wu  = float(r["wu_actual"])
+        lo  = float(r["lo"])
+        hi  = float(r["hi"])
+        won = r["outcome"] == "Yes"
+
+        # Does forecast fall in this range?
+        if not (lo <= fc < hi):
+            continue
+
+        p5 = float(r["price_5_7d"]) if r["price_5_7d"] else None
+        p2 = float(r["price_48h"])  if r["price_48h"]  else None
+
+        if p5 and 0.1 <= p5 <= 50:
+            pnl = round(100/p5 - 1, 2) if won else -1.0
+            early.append({"city": r["city"], "date": r["date"],
+                "range": f"{lo:.0f}-{hi:.0f}", "fc": round(fc,1), "wu": wu,
+                "price_c": round(p5,2), "won": won, "pnl": pnl,
+                "fc_error": round(fc-wu,1)})
+
+        if p2 and 0.1 <= p2 <= 50:
+            pnl = round(100/p2 - 1, 2) if won else -1.0
+            late.append({"city": r["city"], "date": r["date"],
+                "range": f"{lo:.0f}-{hi:.0f}", "fc": round(fc,1), "wu": wu,
+                "price_c": round(p2,2), "won": won, "pnl": pnl,
+                "fc_error": round(fc-wu,1)})
+
+    def summarize(bets, label):
+        if not bets:
+            return {"label": label, "n": 0}
+        n    = len(bets)
+        wins = sum(1 for b in bets if b["won"])
+        pnl  = round(sum(b["pnl"] for b in bets), 2)
+        avgp = round(sum(b["price_c"] for b in bets)/n, 2)
+        wr   = round(wins/n*100, 1)
+        return {
+            "label": label, "n": n, "wins": wins,
+            "win_rate_pct": wr,
+            "avg_price_c": avgp,
+            "breakeven_pct": avgp,
+            "has_edge": wr > avgp,
+            "total_pnl_1usd": pnl,
+            "total_pnl_10usd": round(pnl*10, 2),
+            "bets": bets,
+        }
+
+    return {
+        "early_entry_5_7d": summarize(early, "Buy 5-7 days before resolution"),
+        "late_entry_48h":   summarize(late,  "Buy 48h before resolution"),
+        "verdict": "Compare has_edge: true/false for each timing"
+    }
+
 @app.get("/backtest/rolling-bias")
 def backtest_rolling_bias():
     """
