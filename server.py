@@ -4314,18 +4314,11 @@ def backtest_rolling_mr():
     }
 
 
-@app.get("/admin/refetch-wu-actuals")
-def refetch_wu_actuals():
+@app.get("/admin/refetch-wu/{city}")
+def refetch_wu_city(city: str):
     """
-    Re-fetch correct daily max temperatures from WU for all backtest dates.
-    
-    The bug: wu_temps was populated by an ingest that ran early morning,
-    so max(temps) only captured morning readings, not the true daily max.
-    
-    The fix: for past dates, WU API returns ALL 24 hours of observations.
-    max(all_hourly_temps) = true daily max = what Polymarket resolves against.
-    
-    This overwrites wu_temps with correct values for May 1 - June 15.
+    Re-fetch correct daily max WU temps for ONE city at a time.
+    Run Dallas, NYC, Atlanta separately to avoid timeout.
     """
     import requests as req
     import time
@@ -4338,99 +4331,91 @@ def refetch_wu_actuals():
         "NYC":     {"station": "KLGA", "unit": "e"},
     }
 
+    if city not in STATIONS:
+        return {"error": f"Unknown city: {city}. Use Atlanta, Dallas, or NYC"}
+
+    cfg = STATIONS[city]
+    station = cfg["unit"]
+    station = STATIONS[city]["station"]
     start = date(2026, 5, 1)
-    end   = date.today() - timedelta(days=1)  # yesterday (today not finalized)
+    end   = date.today() - timedelta(days=1)
 
-    results = {}
-    total_updated = 0
+    city_results = []
     errors = []
+    current = start
 
-    for city, cfg in STATIONS.items():
-        station = cfg["station"]
-        city_results = []
-        current = start
+    while current <= end:
+        date_str = current.strftime("%Y-%m-%d")
+        date_fmt = current.strftime("%Y%m%d")
 
-        while current <= end:
-            date_str = current.strftime("%Y-%m-%d")
-            date_fmt = current.strftime("%Y%m%d")
+        try:
+            r = req.get(
+                f"https://api.weather.com/v1/location/{station}:9:US/observations/historical.json",
+                params={"apiKey": WU_KEY, "units": cfg["unit"], "startDate": date_fmt},
+                timeout=12,
+                headers={"User-Agent": "PolyEdge/1.0"}
+            )
 
-            try:
-                r = req.get(
-                    f"https://api.weather.com/v1/location/{station}:9:US/observations/historical.json",
-                    params={"apiKey": WU_KEY, "units": cfg["unit"], "startDate": date_fmt},
-                    timeout=15,
-                    headers={"User-Agent": "PolyEdge/1.0"}
-                )
+            if r.status_code != 200:
+                errors.append(f"{date_str}: HTTP {r.status_code}")
+                current += timedelta(days=1)
+                time.sleep(0.3)
+                continue
 
-                if r.status_code != 200:
-                    errors.append(f"{city} {date_str}: HTTP {r.status_code}")
-                    current += timedelta(days=1)
-                    time.sleep(0.3)
-                    continue
+            obs = r.json().get("observations", [])
+            temps = [float(o["temp"]) for o in obs if o.get("temp") is not None]
 
-                obs = r.json().get("observations", [])
-                temps = [float(o["temp"]) for o in obs if o.get("temp") is not None]
+            if not temps:
+                errors.append(f"{date_str}: no observations returned")
+                current += timedelta(days=1)
+                time.sleep(0.3)
+                continue
 
-                if not temps:
-                    errors.append(f"{city} {date_str}: no observations")
-                    current += timedelta(days=1)
-                    time.sleep(0.3)
-                    continue
+            true_max = max(temps)
+            n_obs = len(temps)
 
-                true_max = max(temps)
-                n_obs = len(obs)
+            conn = get_conn()
+            c = conn.cursor()
+            c.execute("SELECT max_temp_f FROM wu_temps WHERE city=%s AND date=%s",
+                      (city, date_str))
+            existing = c.fetchone()
+            old_val = float(existing["max_temp_f"]) if existing else None
 
-                # Get what we currently have stored
-                conn = get_conn()
-                c = conn.cursor()
-                c.execute(
-                    "SELECT max_temp_f FROM wu_temps WHERE city=%s AND date=%s",
-                    (city, date_str)
-                )
-                existing = c.fetchone()
-                old_val = float(existing["max_temp_f"]) if existing else None
+            c.execute("""
+                INSERT INTO wu_temps (city, station, date, max_temp_f)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (city, date)
+                DO UPDATE SET max_temp_f = EXCLUDED.max_temp_f
+            """, (city, station, date_str, true_max))
+            conn.commit()
+            conn.close()
 
-                # UPDATE or INSERT with correct value
-                c.execute("""
-                    INSERT INTO wu_temps (city, station, date, max_temp_f)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (city, date)
-                    DO UPDATE SET max_temp_f = EXCLUDED.max_temp_f
-                """, (city, station, date_str, true_max))
-                conn.commit()
-                conn.close()
+            city_results.append({
+                "date":         date_str,
+                "n_obs":        n_obs,
+                "old_max":      old_val,
+                "new_max":      true_max,
+                "corrected_by": round(true_max - old_val, 1) if old_val else "new",
+            })
 
-                total_updated += 1
-                city_results.append({
-                    "date": date_str,
-                    "n_obs": n_obs,
-                    "old_max": old_val,
-                    "new_max": true_max,
-                    "corrected_by": round(true_max - old_val, 1) if old_val else None,
-                })
+        except Exception as e:
+            errors.append(f"{date_str}: {e}")
 
-            except Exception as e:
-                errors.append(f"{city} {date_str}: {e}")
+        current += timedelta(days=1)
+        time.sleep(0.3)
 
-            current += timedelta(days=1)
-            time.sleep(0.35)  # rate limit
-
-        results[city] = {
-            "dates_updated": len(city_results),
-            "avg_correction": round(
-                sum(r["corrected_by"] for r in city_results if r["corrected_by"] is not None) /
-                max(1, sum(1 for r in city_results if r["corrected_by"] is not None)), 2
-            ),
-            "sample": city_results[:5],
-            "all": city_results,
-        }
+    corrections = [r["corrected_by"] for r in city_results
+                   if isinstance(r.get("corrected_by"), float)]
 
     return {
-        "total_updated": total_updated,
-        "date_range": f"{start} to {end}",
-        "errors": errors[:20],
-        "results": results,
-        "next_step": "Run /backtest/rolling-mr to get accurate results with corrected data",
+        "city":          city,
+        "station":       station,
+        "dates_updated": len(city_results),
+        "avg_correction_F": round(sum(corrections)/len(corrections), 2) if corrections else 0,
+        "max_correction_F": max(corrections) if corrections else 0,
+        "errors":        errors,
+        "all_dates":     city_results,
+        "next_step":     "Run /admin/refetch-wu/[next city], then /backtest/rolling-mr",
     }
 
 @app.get("/backtest/rolling-bias")
